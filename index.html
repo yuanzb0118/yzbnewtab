@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>新标签页</title>
   <link rel="icon" href="icons/icon16.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=6">
+  <link rel="stylesheet" href="styles.css?v=7">
 </head>
 
 <body>
@@ -58,7 +58,7 @@
   <div id="clockSettingsModal" class="clock-settings-modal glass" role="dialog" aria-modal="true"
     aria-labelledby="clockSettingsTitle" aria-hidden="true" tabindex="-1">
     <div class="modal-header">
-      <h3 id="clockSettingsTitle">界面颜色设置</h3>
+      <h3 id="clockSettingsTitle">设置</h3>
       <button type="button" id="closeClockSettings" class="close-btn" aria-label="关闭时钟设置">
         <svg viewBox="0 0 24 24" stroke-width="2" fill="none">
           <path d="M18 6 6 18" />
@@ -88,6 +88,17 @@
           <span class="slider"></span>
         </label>
       </div>
+      <div class="setting-divider" role="separator"></div>
+      <div class="setting-item backup-item">
+        <label>备份与恢复</label>
+        <div class="backup-actions">
+          <button type="button" id="exportConfigBtn" class="backup-btn">导出配置</button>
+          <button type="button" id="importConfigBtn" class="backup-btn">导入配置</button>
+          <input type="file" id="configImportInput" accept="application/json,.json" hidden
+            aria-label="选择配置备份文件">
+        </div>
+      </div>
+      <p id="backupStatus" class="backup-status" role="status" aria-live="polite"></p>
       <div class="modal-footer">
         <button type="button" id="resetColorsBtn" class="reset-link">恢复默认</button>
       </div>

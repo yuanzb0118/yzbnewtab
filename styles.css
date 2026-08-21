@@ -2056,6 +2056,55 @@ input:checked+.slider:before {
   color: #333;
 }
 
+.setting-divider {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.backup-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.backup-btn {
+  flex: 1;
+  padding: 9px 14px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+  background: white;
+  color: #333;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .2s, border-color .2s;
+}
+
+.backup-btn:hover {
+  background: #f5f5f7;
+  border-color: rgba(0, 0, 0, 0.18);
+}
+
+.backup-btn:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.backup-status {
+  display: none;
+  margin: 0;
+  font-size: 0.8rem;
+  text-align: center;
+  color: #34c759;
+}
+
+.backup-status.show {
+  display: block;
+}
+
+.backup-status[data-type="error"] {
+  color: #ff3b30;
+}
+
 /* ============ ACCESSIBILITY & RESPONSIVE ============ */
 button,
 input,

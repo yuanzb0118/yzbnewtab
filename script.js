@@ -2398,6 +2398,132 @@ resetColorsBtn.onclick = () => {
     updateColor('date', 'rgba(255, 255, 255, 0.9)');
 };
 
+// ============ CONFIG BACKUP ============
+const exportConfigBtn = $('exportConfigBtn');
+const importConfigBtn = $('importConfigBtn');
+const configImportInput = $('configImportInput');
+const backupStatus = $('backupStatus');
+
+const BACKUP_APP_ID = 'yzbnewtab';
+const BACKUP_VERSION = 1;
+const BACKUP_EXCLUDED_KEYS = ['privateBookmarksFolderId'];
+
+let backupStatusTimer;
+
+function showBackupStatus(message, type = 'success') {
+    if (!backupStatus) return;
+    clearTimeout(backupStatusTimer);
+    backupStatus.textContent = message;
+    backupStatus.dataset.type = type;
+    backupStatus.classList.add('show');
+    backupStatusTimer = setTimeout(() => backupStatus.classList.remove('show'), 3200);
+}
+
+function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error('背景图片读取失败'));
+        reader.readAsDataURL(blob);
+    });
+}
+
+async function collectBackupData() {
+    let storage;
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        storage = await localStorageGet(null);
+    } else {
+        storage = {};
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            storage[key] = localStorage.getItem(key);
+        }
+    }
+    BACKUP_EXCLUDED_KEYS.forEach(key => delete storage[key]);
+
+    const { blob, formatVersion } = await getBackgroundStateFromDB();
+    return {
+        app: BACKUP_APP_ID,
+        version: BACKUP_VERSION,
+        exportedAt: new Date().toISOString(),
+        storage,
+        background: blob ? { dataUrl: await blobToDataUrl(blob), formatVersion } : null
+    };
+}
+
+async function exportConfig() {
+    try {
+        exportConfigBtn.disabled = true;
+        const data = await collectBackupData();
+        const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        link.href = url;
+        link.download = `yzbnewtab-backup-${stamp}.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+        showBackupStatus('配置已导出');
+    } catch (error) {
+        console.warn('配置导出失败。', error);
+        showBackupStatus('导出失败，请重试', 'error');
+    } finally {
+        exportConfigBtn.disabled = false;
+    }
+}
+
+async function parseBackupFile(file) {
+    const data = JSON.parse(await file.text());
+    if (data?.app !== BACKUP_APP_ID || typeof data.storage !== 'object' || data.storage === null) {
+        throw new Error('无效的备份文件');
+    }
+    return data;
+}
+
+async function restoreBackground(backup) {
+    if (backup.background?.dataUrl) {
+        const response = await fetch(backup.background.dataUrl);
+        const blob = await response.blob();
+        await saveBackgroundToDB(blob, backup.background.formatVersion || BACKGROUND_FORMAT_VERSION);
+    } else {
+        await deleteBackgroundFromDB();
+    }
+}
+
+async function importConfigFile(file) {
+    if (!confirm('导入将覆盖当前所有布局与设置，确定继续吗？')) return;
+    try {
+        importConfigBtn.disabled = true;
+        const backup = await parseBackupFile(file);
+        const storage = { ...backup.storage };
+        BACKUP_EXCLUDED_KEYS.forEach(key => delete storage[key]);
+
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+            await localStorageSet(storage);
+        } else {
+            Object.entries(storage).forEach(([key, value]) => {
+                localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
+            });
+        }
+        await restoreBackground(backup);
+        showBackupStatus('导入成功，正在刷新...');
+        setTimeout(() => location.reload(), 600);
+    } catch (error) {
+        console.warn('配置导入失败。', error);
+        showBackupStatus('导入失败：文件无效或已损坏', 'error');
+    } finally {
+        importConfigBtn.disabled = false;
+    }
+}
+
+exportConfigBtn.onclick = exportConfig;
+importConfigBtn.onclick = () => configImportInput.click();
+configImportInput.onchange = e => {
+    const file = e.target.files[0];
+    if (file) importConfigFile(file);
+    e.target.value = '';
+};
+
 function getFocusableElements(container) {
     return Array.from(container.querySelectorAll(
         'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
