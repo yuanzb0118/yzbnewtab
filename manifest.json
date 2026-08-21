@@ -13,6 +13,7 @@
     },
     "permissions": [
         "storage",
-        "bookmarks"
+        "bookmarks",
+        "favicon"
     ]
 }

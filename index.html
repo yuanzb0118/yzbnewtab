@@ -5,10 +5,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>新标签页</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="icon" href="icons/icon16.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css?v=6">
 </head>
 
 <body>
@@ -17,7 +15,8 @@
 
   <!-- Top Buttons -->
   <div class="top-buttons">
-    <button id="bookmarksBtn" class="icon-btn glass" title="收藏夹">
+    <button type="button" id="bookmarksBtn" class="icon-btn glass" title="收藏夹" aria-label="打开收藏夹"
+      aria-controls="bookmarksSidebar" aria-expanded="false">
       <svg viewBox="0 0 24 24" stroke-width="2">
         <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" />
       </svg>
@@ -26,37 +25,88 @@
 
   <!-- Bottom Buttons -->
   <div class="bottom-buttons">
-    <button id="resetBgBtn" class="icon-btn glass" title="重置背景">
+    <button type="button" id="resetBgBtn" class="icon-btn glass" title="重置背景" aria-label="重置背景">
       <svg viewBox="0 0 24 24" stroke-width="2">
         <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
         <path d="M3 3v5h5" />
       </svg>
     </button>
     <div class="upload-wrapper">
-      <button class="icon-btn glass" title="上传背景">
+      <span class="icon-btn glass" aria-hidden="true">
         <svg viewBox="0 0 24 24" stroke-width="2">
           <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
           <circle cx="9" cy="9" r="2" />
           <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
         </svg>
+      </span>
+      <input type="file" id="bgUpload" accept="image/*" aria-label="上传背景图片">
+    </div>
+    <button type="button" id="clockSettingsBtn" class="icon-btn glass" title="时钟设置" aria-label="打开时钟设置"
+      aria-controls="clockSettingsModal" aria-expanded="false">
+      <svg viewBox="0 0 24 24" stroke-width="2" fill="none">
+        <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z" />
+        <path d="M12 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
+        <path d="M12 12v6" />
+        <path d="M12 15l-3 3" />
+        <path d="M12 15l3 3" />
+      </svg>
+    </button>
+  </div>
+
+  <!-- Clock Settings Modal -->
+  <div id="clockSettingsOverlay" class="modal-overlay" aria-hidden="true"></div>
+  <div id="clockSettingsModal" class="clock-settings-modal glass" role="dialog" aria-modal="true"
+    aria-labelledby="clockSettingsTitle" aria-hidden="true" tabindex="-1">
+    <div class="modal-header">
+      <h3 id="clockSettingsTitle">界面颜色设置</h3>
+      <button type="button" id="closeClockSettings" class="close-btn" aria-label="关闭时钟设置">
+        <svg viewBox="0 0 24 24" stroke-width="2" fill="none">
+          <path d="M18 6 6 18" />
+          <path d="m6 6 12 12" />
+        </svg>
       </button>
-      <input type="file" id="bgUpload" accept="image/*">
+    </div>
+    <div class="modal-content">
+      <div class="setting-item">
+        <label for="clockColorText">时间颜色</label>
+        <div class="color-picker-wrapper">
+          <input type="color" id="clockColorInput" value="#ffffff" aria-label="选择时间颜色">
+          <input type="text" id="clockColorText" placeholder="#FFFFFF">
+        </div>
+      </div>
+      <div class="setting-item">
+        <label for="dateColorText">日期颜色</label>
+        <div class="color-picker-wrapper">
+          <input type="color" id="dateColorInput" value="#ffffff" aria-label="选择日期颜色">
+          <input type="text" id="dateColorText" placeholder="#FFFFFF">
+        </div>
+      </div>
+      <div class="setting-item format-item">
+        <label>显示秒数</label>
+        <label class="switch">
+              <input type="checkbox" id="showSecondsToggle" aria-label="显示秒数">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="resetColorsBtn" class="reset-link">恢复默认</button>
+      </div>
     </div>
   </div>
 
   <!-- Sidebar Overlay -->
-  <div id="sidebarOverlay" class="sidebar-overlay"></div>
+  <div id="sidebarOverlay" class="sidebar-overlay" aria-hidden="true"></div>
 
   <!-- Sidebar -->
-  <div id="bookmarksSidebar" class="sidebar glass">
+  <aside id="bookmarksSidebar" class="sidebar glass" aria-labelledby="bookmarksTitle" aria-hidden="true" inert>
     <div class="sidebar-header">
-      <h2>
+      <h2 id="bookmarksTitle">
         <svg viewBox="0 0 24 24" stroke-width="2" fill="none">
           <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" />
         </svg>
         收藏夹
       </h2>
-      <button id="closeSidebarBtn" class="close-btn">
+      <button type="button" id="closeSidebarBtn" class="close-btn" aria-label="关闭收藏夹">
         <svg viewBox="0 0 24 24" stroke-width="2" fill="none">
           <path d="M18 6 6 18" />
           <path d="m6 6 12 12" />
@@ -68,10 +118,11 @@
         <circle cx="11" cy="11" r="8" />
         <path d="m21 21-4.35-4.35" />
       </svg>
-      <input type="text" id="bookmarkSearchInput" placeholder="搜索书签..." autocomplete="off">
+      <input type="search" id="bookmarkSearchInput" placeholder="搜索书签..." autocomplete="off" aria-label="搜索书签">
     </div>
     <div id="bookmarkList" class="bookmark-list"></div>
-  </div>
+    <div id="bookmarkNotice" class="bookmark-notice" role="status" aria-live="polite" aria-atomic="true"></div>
+  </aside>
 
   <!-- Main Content -->
   <div class="main-container">
@@ -82,13 +133,15 @@
     </div>
 
     <!-- Search -->
-    <div class="search-container" style="position: relative;">
+    <div class="search-container">
       <div class="search-box glass">
-        <button id="engineBtn" class="engine-btn">
-          <img id="engineIcon" src="" alt="搜索引擎">
+        <button type="button" id="engineBtn" class="engine-btn" aria-label="选择搜索引擎" aria-haspopup="menu"
+          aria-controls="engineDropdown" aria-expanded="false">
+          <img id="engineIcon" src="assets/search-engines/google.svg" alt="">
         </button>
-        <input type="text" id="searchInput" class="search-input" placeholder="搜索..." autocomplete="off">
-        <button id="searchBtn" class="search-btn">
+        <input type="search" id="searchInput" class="search-input" placeholder="搜索..." autocomplete="off"
+          aria-label="搜索内容" aria-controls="searchHistoryDropdown" aria-expanded="false">
+        <button type="button" id="searchBtn" class="search-btn" aria-label="搜索">
           <svg viewBox="0 0 24 24" stroke-width="2" fill="none">
             <circle cx="11" cy="11" r="8" />
             <path d="m21 21-4.35-4.35" />
@@ -97,34 +150,45 @@
       </div>
 
       <!-- Engine Dropdown -->
-      <div id="engineDropdown" class="engine-dropdown glass">
-        <button class="engine-option" data-engine="google">
-          <img src="https://www.google.com/favicon.ico" alt="Google">
+      <div id="engineDropdown" class="engine-dropdown glass" role="menu" aria-hidden="true">
+        <button type="button" class="engine-option" data-engine="google" role="menuitemradio" aria-checked="true">
+          <img src="assets/search-engines/google.svg" alt="">
           <span>Google</span>
         </button>
-        <button class="engine-option" data-engine="baidu">
-          <img src="https://www.baidu.com/favicon.ico" alt="百度">
+        <button type="button" class="engine-option" data-engine="baidu" role="menuitemradio" aria-checked="false">
+          <img src="assets/brand-icons/baidu.svg" alt="">
           <span>百度</span>
         </button>
-        <button class="engine-option" data-engine="bing">
-          <img src="https://www.bing.com/favicon.ico" alt="Bing">
+        <button type="button" class="engine-option" data-engine="bing" role="menuitemradio" aria-checked="false">
+          <img src="assets/search-engines/bing.svg" alt="">
           <span>Bing</span>
         </button>
-        <button class="engine-option" data-engine="github">
-          <img src="https://github.com/favicon.ico" alt="GitHub">
+        <button type="button" class="engine-option" data-engine="github" role="menuitemradio" aria-checked="false">
+          <img src="assets/brand-icons/github.svg" alt="">
           <span>GitHub</span>
         </button>
       </div>
+
+      <!-- Search History -->
+      <div id="searchHistoryDropdown" class="search-history-dropdown" role="region" aria-label="最近搜索"
+        aria-hidden="true">
+        <div class="search-history-header">
+          <span>最近搜索</span>
+          <button type="button" id="clearSearchHistoryBtn">清空全部</button>
+        </div>
+        <div id="searchHistoryList" class="search-history-list" role="list"></div>
+      </div>
+      <div id="searchHistoryStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
     </div>
 
     <!-- Navigation Buttons (Floating) -->
-    <button id="prevPageBtn" class="nav-btn prev hidden">
+    <button type="button" id="prevPageBtn" class="nav-btn prev hidden" aria-label="上一页">
       <svg viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M15 19l-7-7 7-7" />
       </svg>
     </button>
 
-    <button id="nextPageBtn" class="nav-btn next hidden">
+    <button type="button" id="nextPageBtn" class="nav-btn next hidden" aria-label="下一页">
       <svg viewBox="0 0 24 24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M9 5l7 7-7 7" />
       </svg>
@@ -140,8 +204,8 @@
   </div>
 
   <!-- Context Menu -->
-  <div id="contextMenu" class="context-menu glass">
-    <button id="changeIconBtn">
+  <div id="contextMenu" class="context-menu glass" role="menu" aria-hidden="true">
+    <button type="button" id="changeIconBtn" role="menuitem">
       <svg viewBox="0 0 24 24" stroke-width="2" fill="none">
         <rect x="3" y="3" width="7" height="7" rx="1" />
         <rect x="14" y="3" width="7" height="7" rx="1" />
@@ -150,7 +214,7 @@
       </svg>
       更换图标
     </button>
-    <button id="deleteTagBtn">
+    <button type="button" id="deleteTagBtn" role="menuitem">
       <svg viewBox="0 0 24 24" stroke-width="2" fill="none">
         <path d="M3 6h18" />
         <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
@@ -160,12 +224,25 @@
     </button>
   </div>
 
+  <!-- Bookmark Privacy Menu -->
+  <div id="bookmarkContextMenu" class="context-menu bookmark-context-menu glass" role="menu" aria-hidden="true">
+    <button type="button" id="movePrivateBookmarkBtn" role="menuitem">
+      <svg viewBox="0 0 24 24" stroke-width="2" fill="none" aria-hidden="true">
+        <path d="M3 6h7l2 2h9v11H3z" />
+        <path d="M12 11v5" />
+        <path d="m9.5 13.5 2.5 2.5 2.5-2.5" />
+      </svg>
+      <span id="movePrivateBookmarkLabel">移入稍后整理</span>
+    </button>
+  </div>
+
   <!-- Icon Picker Modal -->
-  <div id="iconPickerOverlay" class="modal-overlay"></div>
-  <div id="iconPickerModal" class="icon-picker-modal glass">
+  <div id="iconPickerOverlay" class="modal-overlay" aria-hidden="true"></div>
+  <div id="iconPickerModal" class="icon-picker-modal glass" role="dialog" aria-modal="true"
+    aria-labelledby="iconPickerTitle" aria-hidden="true" tabindex="-1">
     <div class="icon-picker-header">
-      <h3>选择图标</h3>
-      <button id="closeIconPicker" class="close-btn">
+      <h3 id="iconPickerTitle">选择图标</h3>
+      <button type="button" id="closeIconPicker" class="close-btn" aria-label="关闭图标选择器">
         <svg viewBox="0 0 24 24" stroke-width="2" fill="none">
           <path d="M18 6 6 18" />
           <path d="m6 6 12 12" />
@@ -173,20 +250,21 @@
       </button>
     </div>
     <div class="icon-picker-search">
-      <input type="text" id="iconSearchInput" placeholder="搜索图标 (如: google, github, apple...)">
+      <input type="search" id="iconSearchInput" placeholder="搜索图标 (如: google, github, apple...)" aria-label="搜索图标">
     </div>
-    <div class="icon-picker-tabs">
-      <button class="icon-tab active" data-tab="brands">品牌</button>
-      <button class="icon-tab" data-tab="colors">彩色</button>
-      <button class="icon-tab" data-tab="custom">自定义</button>
+    <div class="icon-picker-tabs" role="tablist" aria-label="图标类型">
+      <button type="button" class="icon-tab active" data-tab="brands" role="tab" aria-selected="true">品牌</button>
+      <button type="button" class="icon-tab" data-tab="colors" role="tab" aria-selected="false">彩色</button>
+      <button type="button" class="icon-tab" data-tab="custom" role="tab" aria-selected="false">自定义</button>
     </div>
-    <div id="iconGrid" class="icon-grid">
+    <div id="iconGrid" class="icon-grid" role="listbox" aria-label="可用图标">
       <!-- Icons will be loaded here -->
     </div>
     <div class="icon-picker-custom" id="customIconSection" style="display:none;">
-      <p>输入图标URL：</p>
-      <input type="text" id="customIconUrl" placeholder="https://example.com/icon.png">
-      <button id="applyCustomIcon" class="apply-btn">应用</button>
+      <label for="customIconUrl">输入图标 URL</label>
+      <input type="url" id="customIconUrl" placeholder="https://example.com/icon.png">
+      <p id="customIconError" class="field-error" role="alert" aria-live="polite"></p>
+      <button type="button" id="applyCustomIcon" class="apply-btn">应用</button>
     </div>
   </div>
 

@@ -1,17 +1,53 @@
 // ============ CONFIG ============
 const engines = {
-    google: { name: 'Google', url: 'https://www.google.com/search?q=', icon: 'https://www.google.com/favicon.ico' },
-    baidu: { name: '百度', url: 'https://www.baidu.com/s?wd=', icon: 'https://www.baidu.com/favicon.ico' },
-    bing: { name: 'Bing', url: 'https://www.bing.com/search?q=', icon: 'https://www.bing.com/favicon.ico' },
-    github: { name: 'GitHub', url: 'https://github.com/search?q=', icon: 'https://github.com/favicon.ico' }
+    google: { name: 'Google', url: 'https://www.google.com/search?q=', icon: 'assets/search-engines/google.svg' },
+    baidu: { name: '百度', url: 'https://www.baidu.com/s?wd=', icon: 'assets/brand-icons/baidu.svg' },
+    bing: { name: 'Bing', url: 'https://www.bing.com/search?q=', icon: 'assets/search-engines/bing.svg' },
+    github: { name: 'GitHub', url: 'https://github.com/search?q=', icon: 'assets/brand-icons/github.svg' }
 };
 
 const defaultBg = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-const MAX_TAGS = 15;
+const BACKGROUND_FORMAT_VERSION = 2;
+const BRAND_ICON_DIR = 'assets/brand-icons';
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const FAVICON_REQUEST_SIZE = 128;
+const FAVICON_CACHE_MAX_AGE = 5 * 60 * 1000;
+const PRIVATE_BOOKMARKS_FOLDER_NAME = '稍后整理';
+const PRIVATE_BOOKMARKS_LEGACY_FOLDER_NAMES = new Set(['私密收藏']);
+const PRIVATE_BOOKMARKS_FOLDER_ID_KEY = 'privateBookmarksFolderId';
+const PRIVATE_BOOKMARK_ORIGINS_KEY = 'privateBookmarkOrigins';
+const OTHER_BOOKMARKS_ROOT_ID = '2';
+const SEARCH_HISTORY_STORAGE_KEY = 'searchHistory';
+const SEARCH_HISTORY_LIMIT = 20;
+const SEARCH_HISTORY_DISPLAY_LIMIT = 8;
 
 let currentEngine = 'google';
 let desktopTags = [];
 let contextTagUrl = null;
+let showSeconds = false;
+let clockTimerId = null;
+let currentBgObjectUrl = null;
+let currentPage = 0;
+let currentPageSize = getPageSize();
+let dragSrcEl = null;
+let isInitialRender = true;
+let lastFocusedElement = null;
+let contextMenuTrigger = null;
+let bookmarkMenuTrigger = null;
+let bookmarkMenuNode = null;
+let bookmarkMenuIsPrivate = false;
+let privateBookmarksFolderId = null;
+let privateBookmarkOrigins = {};
+let privateBookmarkDescendantIds = new Set();
+let privateBookmarksRevealed = false;
+let privateBookmarksHeader = null;
+let privateBookmarksContent = null;
+let bookmarkLoadRequestId = 0;
+let bookmarkNoticeTimer = null;
+let searchHistory = [];
+const pendingFaviconRefreshes = new Map();
+const bookmarkIconMetadata = new WeakMap();
+let bookmarkIconObserver = null;
 
 // ============ DOM ELEMENTS ============
 const $ = id => document.getElementById(id);
@@ -22,6 +58,11 @@ const engineIcon = $('engineIcon');
 const engineDropdown = $('engineDropdown');
 const searchInput = $('searchInput');
 const searchBtn = $('searchBtn');
+const searchContainer = searchInput.closest('.search-container');
+const searchHistoryDropdown = $('searchHistoryDropdown');
+const searchHistoryList = $('searchHistoryList');
+const clearSearchHistoryBtn = $('clearSearchHistoryBtn');
+const searchHistoryStatus = $('searchHistoryStatus');
 const bgUpload = $('bgUpload');
 const resetBgBtn = $('resetBgBtn');
 const bookmarksBtn = $('bookmarksBtn');
@@ -30,8 +71,12 @@ const sidebarOverlay = $('sidebarOverlay');
 const closeSidebarBtn = $('closeSidebarBtn');
 const bookmarkList = $('bookmarkList');
 const bookmarkSearchInput = $('bookmarkSearchInput');
+const bookmarkNotice = $('bookmarkNotice');
 const tagsGrid = $('tagsGrid');
 const contextMenu = $('contextMenu');
+const bookmarkContextMenu = $('bookmarkContextMenu');
+const movePrivateBookmarkBtn = $('movePrivateBookmarkBtn');
+const movePrivateBookmarkLabel = $('movePrivateBookmarkLabel');
 const deleteTagBtn = $('deleteTagBtn');
 const changeIconBtn = $('changeIconBtn');
 const iconPickerModal = $('iconPickerModal');
@@ -41,6 +86,7 @@ const iconSearchInput = $('iconSearchInput');
 const iconGrid = $('iconGrid');
 const customIconSection = $('customIconSection');
 const customIconUrl = $('customIconUrl');
+const customIconError = $('customIconError');
 const applyCustomIcon = $('applyCustomIcon');
 const prevPageBtn = $('prevPageBtn');
 const nextPageBtn = $('nextPageBtn');
@@ -48,174 +94,554 @@ const nextPageBtn = $('nextPageBtn');
 // ============ CLOCK ============
 function updateClock() {
     const now = new Date();
-    clock.textContent = now.toTimeString().slice(0, 5);
+    if (showSeconds) {
+        clock.textContent = now.toTimeString().slice(0, 8);
+    } else {
+        clock.textContent = now.toTimeString().slice(0, 5);
+    }
     dateEl.textContent = now.toLocaleDateString('zh-CN', {
         year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'
     });
 }
-updateClock();
-setInterval(updateClock, 1000);
+
+function scheduleClock() {
+    clearTimeout(clockTimerId);
+    updateClock();
+
+    const now = new Date();
+    const interval = showSeconds ? 1000 : 60000;
+    const elapsed = showSeconds
+        ? now.getMilliseconds()
+        : now.getSeconds() * 1000 + now.getMilliseconds();
+    clockTimerId = setTimeout(scheduleClock, Math.max(100, interval - elapsed));
+}
+
+scheduleClock();
 
 // ============ SEARCH ENGINE ============
-function setEngine(key) {
+function setEngine(key, { restoreFocus = false } = {}) {
+    if (!engines[key]) key = 'google';
     currentEngine = key;
     engineIcon.src = engines[key].icon;
+    engineIcon.alt = '';
+    engineBtn.dataset.engine = key;
+    engineBtn.setAttribute('aria-label', `选择搜索引擎，当前为${engines[key].name}`);
+    document.querySelectorAll('.engine-option').forEach(option => {
+        option.setAttribute('aria-checked', String(option.dataset.engine === key));
+    });
     localStorage.setItem('engine', key);
+    closeEngineDropdown({ restoreFocus });
+}
+
+function openEngineDropdown() {
+    closeSearchHistory();
+    engineDropdown.classList.add('show');
+    engineDropdown.setAttribute('aria-hidden', 'false');
+    engineBtn.setAttribute('aria-expanded', 'true');
+}
+
+function closeEngineDropdown({ restoreFocus = false } = {}) {
+    if (restoreFocus) engineBtn.focus();
     engineDropdown.classList.remove('show');
+    engineDropdown.setAttribute('aria-hidden', 'true');
+    engineBtn.setAttribute('aria-expanded', 'false');
 }
 
 engineBtn.onclick = e => {
     e.stopPropagation();
-    engineDropdown.classList.toggle('show');
+    if (engineDropdown.classList.contains('show')) {
+        closeEngineDropdown();
+    } else {
+        openEngineDropdown();
+    }
+};
+
+engineBtn.onkeydown = e => {
+    if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) {
+        e.preventDefault();
+        openEngineDropdown();
+        const options = Array.from(document.querySelectorAll('.engine-option'));
+        const selectedIndex = options.findIndex(option => option.dataset.engine === currentEngine);
+        options[Math.max(0, selectedIndex)].focus();
+    }
 };
 
 document.querySelectorAll('.engine-option').forEach(btn => {
-    btn.onclick = () => setEngine(btn.dataset.engine);
+    btn.onclick = () => {
+        setEngine(btn.dataset.engine, { restoreFocus: true });
+    };
+    btn.onkeydown = e => {
+        const options = Array.from(document.querySelectorAll('.engine-option'));
+        const index = options.indexOf(btn);
+        let nextIndex = index;
+        if (e.key === 'ArrowDown') nextIndex = (index + 1) % options.length;
+        if (e.key === 'ArrowUp') nextIndex = (index - 1 + options.length) % options.length;
+        if (e.key === 'Home') nextIndex = 0;
+        if (e.key === 'End') nextIndex = options.length - 1;
+        if (nextIndex !== index) {
+            e.preventDefault();
+            options[nextIndex].focus();
+        }
+    };
 });
 
-document.onclick = () => engineDropdown.classList.remove('show');
+document.addEventListener('click', event => {
+    closeEngineDropdown();
+    if (!event.target.closest('.search-container')) closeSearchHistory();
+});
 
 setEngine(localStorage.getItem('engine') || 'google');
 
 // ============ SEARCH ============
-function doSearch() {
-    const q = searchInput.value.trim();
-    if (q) location.href = engines[currentEngine].url + encodeURIComponent(q);
+function normalizeSearchHistory(value) {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set();
+    const normalized = [];
+    value.forEach(item => {
+        if (typeof item !== 'string') return;
+        const query = item.trim();
+        const key = query.toLocaleLowerCase();
+        if (!query || seen.has(key)) return;
+        seen.add(key);
+        normalized.push(query);
+    });
+    return normalized.slice(0, SEARCH_HISTORY_LIMIT);
 }
 
-searchBtn.onclick = doSearch;
-searchInput.onkeypress = e => e.key === 'Enter' && doSearch();
+function readFallbackSearchHistory() {
+    try {
+        return normalizeSearchHistory(JSON.parse(localStorage.getItem(SEARCH_HISTORY_STORAGE_KEY) || '[]'));
+    } catch {
+        return [];
+    }
+}
+
+async function readSearchHistory() {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        const result = await callChromeApi(chrome.storage.local, 'get', [SEARCH_HISTORY_STORAGE_KEY]);
+        return normalizeSearchHistory(result?.[SEARCH_HISTORY_STORAGE_KEY]);
+    }
+    return readFallbackSearchHistory();
+}
+
+async function persistSearchHistory() {
+    const value = normalizeSearchHistory(searchHistory);
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        await callChromeApi(chrome.storage.local, 'set', { [SEARCH_HISTORY_STORAGE_KEY]: value });
+    } else {
+        localStorage.setItem(SEARCH_HISTORY_STORAGE_KEY, JSON.stringify(value));
+    }
+    searchHistory = value;
+}
+
+function announceSearchHistory(message) {
+    if (!searchHistoryStatus) return;
+    searchHistoryStatus.textContent = '';
+    requestAnimationFrame(() => {
+        searchHistoryStatus.textContent = message;
+    });
+}
+
+function getVisibleSearchHistory() {
+    const filter = searchInput.value.trim().toLocaleLowerCase();
+    return searchHistory
+        .filter(query => !filter || query.toLocaleLowerCase().includes(filter))
+        .slice(0, SEARCH_HISTORY_DISPLAY_LIMIT);
+}
+
+function openSearchHistory() {
+    const visibleHistory = getVisibleSearchHistory();
+    if (!visibleHistory.length) {
+        closeSearchHistory();
+        return;
+    }
+    closeEngineDropdown();
+    searchHistoryDropdown.classList.add('show');
+    searchHistoryDropdown.setAttribute('aria-hidden', 'false');
+    searchInput.setAttribute('aria-expanded', 'true');
+}
+
+function closeSearchHistory({ restoreFocus = false } = {}) {
+    searchHistoryDropdown.classList.remove('show');
+    searchHistoryDropdown.setAttribute('aria-hidden', 'true');
+    searchInput.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) searchInput.focus();
+}
+
+function renderSearchHistory() {
+    searchHistoryList.replaceChildren();
+    const visibleHistory = getVisibleSearchHistory();
+    visibleHistory.forEach(query => {
+        const item = document.createElement('div');
+        item.className = 'search-history-item';
+        item.setAttribute('role', 'listitem');
+
+        const queryButton = document.createElement('button');
+        queryButton.type = 'button';
+        queryButton.className = 'search-history-query';
+        queryButton.dataset.query = query;
+        queryButton.setAttribute('aria-label', `搜索：${query}`);
+        queryButton.appendChild(createSvg([
+            'M3 12a9 9 0 1 0 3-6.7L3 8',
+            'M3 3v5h5',
+            'M12 7v5l3 2'
+        ]));
+        const label = document.createElement('span');
+        label.textContent = query;
+        queryButton.appendChild(label);
+        queryButton.addEventListener('click', event => {
+            event.stopPropagation();
+            searchInput.value = query;
+            void doSearch();
+        });
+
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'delete-search-history-btn';
+        deleteButton.setAttribute('aria-label', `删除搜索记录：${query}`);
+        deleteButton.appendChild(createSvg(['M18 6 6 18', 'm6 6 12 12']));
+        deleteButton.addEventListener('click', event => {
+            event.stopPropagation();
+            void deleteSearchHistoryItem(query);
+        });
+
+        item.appendChild(queryButton);
+        item.appendChild(deleteButton);
+        searchHistoryList.appendChild(item);
+    });
+
+    clearSearchHistoryBtn.hidden = searchHistory.length === 0;
+    if (document.activeElement === searchInput) openSearchHistory();
+    else if (!visibleHistory.length) closeSearchHistory();
+}
+
+async function updateSearchHistory(nextHistory, successMessage, { render = true } = {}) {
+    const previousHistory = searchHistory;
+    searchHistory = normalizeSearchHistory(nextHistory);
+    if (render) renderSearchHistory();
+    try {
+        await persistSearchHistory();
+        if (successMessage) announceSearchHistory(successMessage);
+        return true;
+    } catch {
+        searchHistory = previousHistory;
+        if (render) renderSearchHistory();
+        announceSearchHistory('搜索记录更新失败');
+        return false;
+    }
+}
+
+async function addSearchHistoryItem(query) {
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) return;
+    const key = normalizedQuery.toLocaleLowerCase();
+    const nextHistory = [
+        normalizedQuery,
+        ...searchHistory.filter(item => item.toLocaleLowerCase() !== key)
+    ];
+    await updateSearchHistory(nextHistory, null, { render: false });
+}
+
+async function deleteSearchHistoryItem(query) {
+    const key = query.toLocaleLowerCase();
+    const deletedIndex = getVisibleSearchHistory().findIndex(item => item.toLocaleLowerCase() === key);
+    const updated = await updateSearchHistory(
+        searchHistory.filter(item => item.toLocaleLowerCase() !== key),
+        `已删除搜索记录：${query}`
+    );
+    if (!updated) return;
+
+    const deleteButtons = Array.from(searchHistoryList.querySelectorAll('.delete-search-history-btn'));
+    if (deleteButtons.length) deleteButtons[Math.min(Math.max(0, deletedIndex), deleteButtons.length - 1)].focus();
+    else closeSearchHistory({ restoreFocus: true });
+}
+
+async function clearSearchHistory() {
+    const updated = await updateSearchHistory([], '搜索记录已清空');
+    if (updated) closeSearchHistory({ restoreFocus: true });
+}
+
+async function doSearch() {
+    const query = searchInput.value.trim();
+    if (!query) return;
+    closeSearchHistory();
+    try {
+        await addSearchHistoryItem(query);
+    } catch {
+        // 历史记录属于增强功能，保存失败时仍需继续搜索。
+    }
+    location.href = engines[currentEngine].url + encodeURIComponent(query);
+}
+
+searchBtn.onclick = () => void doSearch();
+clearSearchHistoryBtn.onclick = event => {
+    event.stopPropagation();
+    void clearSearchHistory();
+};
+
+searchInput.addEventListener('focus', renderSearchHistory);
+searchInput.addEventListener('input', renderSearchHistory);
+searchInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        void doSearch();
+        return;
+    }
+    if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+    renderSearchHistory();
+    const queryButtons = Array.from(searchHistoryList.querySelectorAll('.search-history-query'));
+    if (!queryButtons.length) return;
+    event.preventDefault();
+    (event.key === 'ArrowDown' ? queryButtons[0] : queryButtons[queryButtons.length - 1]).focus();
+});
+
+searchHistoryDropdown.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSearchHistory({ restoreFocus: true });
+        return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const queryButtons = Array.from(searchHistoryList.querySelectorAll('.search-history-query'));
+    if (!queryButtons.length) return;
+    const activeItem = document.activeElement.closest?.('.search-history-item');
+    const currentQueryButton = activeItem?.querySelector('.search-history-query');
+    let index = Math.max(0, queryButtons.indexOf(currentQueryButton));
+    if (event.key === 'ArrowDown') index = (index + 1) % queryButtons.length;
+    if (event.key === 'ArrowUp') index = (index - 1 + queryButtons.length) % queryButtons.length;
+    if (event.key === 'Home') index = 0;
+    if (event.key === 'End') index = queryButtons.length - 1;
+    event.preventDefault();
+    queryButtons[index].focus();
+});
+
+searchContainer.addEventListener('focusout', () => {
+    requestAnimationFrame(() => {
+        if (!searchContainer.contains(document.activeElement)) closeSearchHistory();
+    });
+});
+
+readSearchHistory()
+    .then(history => {
+        searchHistory = history;
+        if (document.activeElement === searchInput) renderSearchHistory();
+    })
+    .catch(() => {
+        searchHistory = [];
+    });
 
 // ============ BACKGROUND ============
 const DB_NAME = 'YZBNewTabDB';
-const DB_VERSION = 1;
-const STORE_NAME = 'backgrounds';
+const DB_VERSION = 2;
+const BACKGROUND_STORE_NAME = 'backgrounds';
+const ICON_CACHE_STORE_NAME = 'iconCache';
 
 function initDB() {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open(DB_NAME, DB_VERSION);
         request.onerror = () => reject(request.error);
+        request.onblocked = () => reject(new Error('IndexedDB 升级被其他新标签页阻塞'));
         request.onsuccess = () => resolve(request.result);
         request.onupgradeneeded = (e) => {
-            e.target.result.createObjectStore(STORE_NAME);
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(BACKGROUND_STORE_NAME)) {
+                db.createObjectStore(BACKGROUND_STORE_NAME);
+            }
+            if (!db.objectStoreNames.contains(ICON_CACHE_STORE_NAME)) {
+                db.createObjectStore(ICON_CACHE_STORE_NAME);
+            }
         };
     });
 }
 
-function saveBackgroundToDB(file) {
-    return initDB().then(db => {
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction(STORE_NAME, 'readwrite');
-            const store = tx.objectStore(STORE_NAME);
-            const request = store.put(file, 'customBg');
-            request.onsuccess = () => resolve();
-            request.onerror = () => reject(request.error);
-        });
-    });
+function saveBackgroundToDB(file, formatVersion = BACKGROUND_FORMAT_VERSION) {
+    return initDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(BACKGROUND_STORE_NAME, 'readwrite');
+        const store = tx.objectStore(BACKGROUND_STORE_NAME);
+        store.put(file, 'customBg');
+        store.put(formatVersion, 'backgroundFormatVersion');
+        tx.oncomplete = () => {
+            db.close();
+            resolve();
+        };
+        tx.onerror = () => {
+            db.close();
+            reject(tx.error);
+        };
+        tx.onabort = () => {
+            db.close();
+            reject(tx.error);
+        };
+    }));
 }
 
-function getBackgroundFromDB() {
-    return initDB().then(db => {
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction(STORE_NAME, 'readonly');
-            const store = tx.objectStore(STORE_NAME);
-            const request = store.get('customBg');
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error);
-        });
-    });
+function getBackgroundStateFromDB() {
+    return initDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(BACKGROUND_STORE_NAME, 'readonly');
+        const store = tx.objectStore(BACKGROUND_STORE_NAME);
+        const backgroundRequest = store.get('customBg');
+        const versionRequest = store.get('backgroundFormatVersion');
+
+        tx.oncomplete = () => {
+            db.close();
+            resolve({
+                blob: backgroundRequest.result,
+                formatVersion: versionRequest.result || 1
+            });
+        };
+        tx.onerror = () => {
+            db.close();
+            reject(tx.error);
+        };
+        tx.onabort = () => {
+            db.close();
+            reject(tx.error);
+        };
+    }));
 }
 
 function deleteBackgroundFromDB() {
-    return initDB().then(db => {
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction(STORE_NAME, 'readwrite');
-            const store = tx.objectStore(STORE_NAME);
-            const request = store.delete('customBg');
-            request.onsuccess = () => resolve();
-            request.onerror = () => reject(request.error);
-        });
-    });
+    return initDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(BACKGROUND_STORE_NAME, 'readwrite');
+        const store = tx.objectStore(BACKGROUND_STORE_NAME);
+        store.delete('customBg');
+        store.delete('backgroundFormatVersion');
+        tx.oncomplete = () => {
+            db.close();
+            resolve();
+        };
+        tx.onerror = () => {
+            db.close();
+            reject(tx.error);
+        };
+        tx.onabort = () => {
+            db.close();
+            reject(tx.error);
+        };
+    }));
 }
 
 function setBg(value) {
+    if (currentBgObjectUrl) {
+        URL.revokeObjectURL(currentBgObjectUrl);
+        currentBgObjectUrl = null;
+    }
+
     if (value instanceof Blob) {
-        const url = URL.createObjectURL(value);
-        document.body.style.background = `url('${url}') center/cover fixed`;
+        currentBgObjectUrl = URL.createObjectURL(value);
+        document.body.style.background = `url('${currentBgObjectUrl}') center/cover no-repeat`;
     } else if (value.startsWith('http') || value.startsWith('data:')) {
-        document.body.style.background = `url('${value}') center/cover fixed`;
+        document.body.style.background = `url('${value}') center/cover no-repeat`;
     } else {
         document.body.style.background = value;
     }
 }
 
-function loadBg() {
-    getBackgroundFromDB().then(blob => {
-        if (blob) {
-            setBg(blob);
-        } else if (chrome?.storage) {
-            // Fallback/Migration: Check local storage just in case or for transition
-            chrome.storage.local.get(['customBg'], r => {
-                if (r.customBg) setBg(r.customBg);
-            });
-        }
-    }).catch(console.error);
+function scheduleIdleTask(task) {
+    if ('requestIdleCallback' in window) {
+        requestIdleCallback(task, { timeout: 2500 });
+    } else {
+        setTimeout(task, 500);
+    }
 }
 
-function compressImage(file) {
-    return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = event => {
-            const img = new Image();
-            img.src = event.target.result;
-            img.onload = () => {
-                const canvas = document.createElement('canvas');
-                let width = img.width;
-                let height = img.height;
-                const MAX_SIZE = 3840; // 4K Resolution
-
-                if (width > MAX_SIZE || height > MAX_SIZE) {
-                    if (width > height) {
-                        height *= MAX_SIZE / width;
-                        width = MAX_SIZE;
-                    } else {
-                        width *= MAX_SIZE / height;
-                        height = MAX_SIZE;
+async function loadBg() {
+    try {
+        const { blob, formatVersion } = await getBackgroundStateFromDB();
+        if (blob) {
+            setBg(blob);
+            if (formatVersion < BACKGROUND_FORMAT_VERSION) {
+                scheduleIdleTask(async () => {
+                    try {
+                        const optimized = await compressImage(blob);
+                        await saveBackgroundToDB(optimized);
+                    } catch (error) {
+                        console.warn('旧背景迁移失败，将继续使用原图。', error);
                     }
-                }
+                });
+            }
+            return;
+        }
 
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0, width, height);
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+            chrome.storage.local.get(['customBg'], result => {
+                if (!result.customBg) return;
+                setBg(result.customBg);
+                scheduleIdleTask(async () => {
+                    try {
+                        const response = await fetch(result.customBg);
+                        const optimized = await compressImage(await response.blob());
+                        await saveBackgroundToDB(optimized);
+                        chrome.storage.local.remove('customBg');
+                    } catch (error) {
+                        console.warn('旧版背景迁移失败，将继续使用原图。', error);
+                    }
+                });
+            });
+        }
+    } catch (error) {
+        console.warn('背景读取失败，将使用默认背景。', error);
+    }
+}
 
-                // High quality compression
-                canvas.toBlob(blob => {
-                    resolve(blob);
-                }, 'image/webp', 0.95);
-            };
+function getBackgroundMaxDimension() {
+    const viewportPixels = Math.ceil(Math.max(window.innerWidth, window.innerHeight) * (window.devicePixelRatio || 1));
+    return Math.min(3840, Math.max(1920, viewportPixels));
+}
+
+function loadImageElement(blob) {
+    return new Promise((resolve, reject) => {
+        const objectUrl = URL.createObjectURL(blob);
+        const image = new Image();
+        image.onload = () => {
+            URL.revokeObjectURL(objectUrl);
+            resolve(image);
         };
+        image.onerror = () => {
+            URL.revokeObjectURL(objectUrl);
+            reject(new Error('无法解码背景图片'));
+        };
+        image.src = objectUrl;
+    });
+}
+
+async function compressImage(file) {
+    const source = 'createImageBitmap' in window
+        ? await createImageBitmap(file)
+        : await loadImageElement(file);
+    const sourceWidth = source.width || source.naturalWidth;
+    const sourceHeight = source.height || source.naturalHeight;
+    const maxDimension = getBackgroundMaxDimension();
+    const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { alpha: false });
+    context.drawImage(source, 0, 0, width, height);
+    source.close?.();
+
+    return new Promise((resolve, reject) => {
+        canvas.toBlob(blob => {
+            if (blob) resolve(blob);
+            else reject(new Error('背景图片压缩失败'));
+        }, 'image/webp', 0.85);
     });
 }
 
 bgUpload.onchange = async e => {
     const file = e.target.files[0];
     if (file) {
-        // Show original immediately to feel responsive
         setBg(file);
 
         try {
-            // Compress in background
             const compressedBlob = await compressImage(file);
-            // Save optimized version to DB
             await saveBackgroundToDB(compressedBlob);
-            // Clean up legacy storage
-            chrome?.storage?.local.remove('customBg');
+            if (typeof chrome !== 'undefined') chrome.storage?.local.remove('customBg');
         } catch (err) {
-            console.error('Image processing failed:', err);
-            // Fallback to original if compression fails
-            saveBackgroundToDB(file).catch(console.error);
+            console.warn('背景图片处理失败，将保存原图。', err);
+            saveBackgroundToDB(file, 1).catch(console.error);
         }
     }
 };
@@ -223,178 +649,627 @@ bgUpload.onchange = async e => {
 resetBgBtn.onclick = () => {
     setBg(defaultBg);
     deleteBackgroundFromDB().catch(console.error);
-    chrome?.storage?.local.remove('customBg');
+    if (typeof chrome !== 'undefined') chrome.storage?.local.remove('customBg');
 };
 
 loadBg();
 
 // ============ SIDEBAR ============
 function openSidebar() {
+    lastFocusedElement = document.activeElement;
+    resetPrivateBookmarksDisclosure();
     sidebar.classList.add('open');
     sidebarOverlay.classList.add('show');
+    sidebar.inert = false;
+    sidebar.setAttribute('aria-hidden', 'false');
+    bookmarksBtn.setAttribute('aria-expanded', 'true');
     loadBookmarks();
+    requestAnimationFrame(() => bookmarkSearchInput?.focus());
 }
 
-function closeSidebar() {
+function closeSidebar({ restoreFocus = true } = {}) {
+    hideBookmarkContextMenu();
+    resetPrivateBookmarksDisclosure();
+    bookmarkLoadRequestId++;
+    if (restoreFocus) (lastFocusedElement || bookmarksBtn).focus?.();
     sidebar.classList.remove('open');
     sidebarOverlay.classList.remove('show');
+    sidebar.inert = true;
+    sidebar.setAttribute('aria-hidden', 'true');
+    bookmarksBtn.setAttribute('aria-expanded', 'false');
 }
 
 bookmarksBtn.onclick = openSidebar;
 closeSidebarBtn.onclick = closeSidebar;
 sidebarOverlay.onclick = closeSidebar;
 
-// Bookmark search functionality
-let allBookmarks = []; // Store all bookmarks for filtering
-
+let bookmarkSearchTimer = null;
 bookmarkSearchInput?.addEventListener('input', (e) => {
     const query = e.target.value.trim().toLowerCase();
-    if (query) {
-        searchBookmarks(query);
-    } else {
-        loadBookmarks();
-    }
+    clearTimeout(bookmarkSearchTimer);
+    bookmarkSearchTimer = setTimeout(() => {
+        if (query) searchBookmarks(query);
+        else loadBookmarks({ preserveSearch: true });
+    }, 120);
 });
 
-function searchBookmarks(query) {
-    if (!chrome?.bookmarks) return;
+function createSvg(paths, viewBox = '0 0 24 24') {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', viewBox);
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('aria-hidden', 'true');
+    paths.forEach(d => {
+        const path = document.createElementNS(SVG_NS, 'path');
+        path.setAttribute('d', d);
+        svg.appendChild(path);
+    });
+    return svg;
+}
 
-    chrome.bookmarks.search(query, results => {
-        bookmarkList.innerHTML = '';
+function createPlaceholder(message) {
+    const placeholder = document.createElement('p');
+    placeholder.className = 'placeholder-text';
+    placeholder.textContent = message;
+    return placeholder;
+}
 
-        if (results.length === 0) {
-            bookmarkList.innerHTML = '<p class="placeholder-text" style="color: #888;">未找到匹配的书签</p>';
-            return;
+function getSafeBookmarkUrl(value) {
+    try {
+        const url = new URL(value);
+        const allowedProtocols = new Set(['http:', 'https:', 'file:', 'chrome:', 'edge:', 'about:']);
+        return allowedProtocols.has(url.protocol) ? url.href : null;
+    } catch {
+        return null;
+    }
+}
+
+function createBookmarkIcon(siteUrl, title, size = 32) {
+    const image = document.createElement('img');
+    image.alt = '';
+    image.decoding = 'async';
+    image.width = size;
+    image.height = size;
+    image.src = generateFallbackIcon(title);
+
+    if ('IntersectionObserver' in window) {
+        if (!bookmarkIconObserver) {
+            bookmarkIconObserver = new IntersectionObserver(entries => {
+                entries.forEach(entry => {
+                    if (!entry.isIntersecting) return;
+                    const metadata = bookmarkIconMetadata.get(entry.target);
+                    bookmarkIconObserver.unobserve(entry.target);
+                    bookmarkIconMetadata.delete(entry.target);
+                    if (metadata) loadSiteIcon(entry.target, null, metadata.siteUrl, metadata.title);
+                });
+            }, { root: sidebar, rootMargin: '80px' });
         }
+        bookmarkIconMetadata.set(image, { siteUrl, title });
+        bookmarkIconObserver.observe(image);
+    } else {
+        loadSiteIcon(image, null, siteUrl, title);
+    }
+    return image;
+}
 
-        // Filter only bookmarks with URLs (not folders)
-        const bookmarks = results.filter(item => item.url);
+function createAddedBadge() {
+    const badge = document.createElement('span');
+    badge.className = 'added-badge';
+    badge.textContent = '✓ 已添加';
+    return badge;
+}
 
-        bookmarks.forEach(node => {
-            const div = document.createElement('div');
-            div.className = 'bookmark-item';
-            const isAdded = desktopTags.some(t => t.url === node.url);
-            const host = new URL(node.url).hostname;
+function getChromeLastError() {
+    try {
+        return chrome.runtime?.lastError || null;
+    } catch {
+        return null;
+    }
+}
 
-            div.innerHTML = `
-              <a class="bookmark-link" href="${node.url}" target="_blank">
-                <img src="https://www.google.com/s2/favicons?domain=${host}&sz=32" alt="">
-                <span>${node.title || node.url}</span>
-              </a>
-              ${isAdded
-                    ? '<span class="added-badge">✓ 已添加</span>'
-                    : `<button class="add-btn" data-url="${node.url}" data-title="${node.title || ''}" data-host="${host}">
-                    <svg viewBox="0 0 24 24" stroke-width="2" fill="none"><path d="M12 5v14M5 12h14"/></svg>
-                   </button>`
-                }
-            `;
-
-            const addBtn = div.querySelector('.add-btn');
-            addBtn?.addEventListener('click', e => {
-                e.stopPropagation();
-                const tag = {
-                    url: addBtn.dataset.url,
-                    title: addBtn.dataset.title,
-                    icon: `https://www.google.com/s2/favicons?domain=${addBtn.dataset.host}&sz=256`
-                };
-                if (addTag(tag)) {
-                    addBtn.outerHTML = '<span class="added-badge">✓ 已添加</span>';
-                }
+function callChromeApi(target, method, ...args) {
+    return new Promise((resolve, reject) => {
+        try {
+            target[method](...args, result => {
+                const error = getChromeLastError();
+                if (error) reject(new Error(error.message || 'Chrome API 调用失败'));
+                else resolve(result);
             });
-
-            bookmarkList.appendChild(div);
-        });
+        } catch (error) {
+            reject(error);
+        }
     });
 }
 
-function loadBookmarks() {
-    if (!chrome?.bookmarks) {
-        bookmarkList.innerHTML = '<p class="placeholder-text" style="color: #888;">书签功能仅在扩展中可用</p>';
+function bookmarkApi(method, ...args) {
+    return callChromeApi(chrome.bookmarks, method, ...args);
+}
+
+function localStorageGet(keys) {
+    return callChromeApi(chrome.storage.local, 'get', keys);
+}
+
+function localStorageSet(items) {
+    return callChromeApi(chrome.storage.local, 'set', items);
+}
+
+function showBookmarkNotice(message, type = 'success') {
+    if (!bookmarkNotice) return;
+    clearTimeout(bookmarkNoticeTimer);
+    bookmarkNotice.textContent = message;
+    bookmarkNotice.dataset.type = type;
+    bookmarkNotice.classList.add('show');
+    bookmarkNoticeTimer = setTimeout(() => {
+        bookmarkNotice.classList.remove('show');
+    }, 2800);
+}
+
+async function loadPrivateBookmarkState() {
+    const stored = await localStorageGet([
+        PRIVATE_BOOKMARKS_FOLDER_ID_KEY,
+        PRIVATE_BOOKMARK_ORIGINS_KEY
+    ]);
+    privateBookmarksFolderId = typeof stored[PRIVATE_BOOKMARKS_FOLDER_ID_KEY] === 'string'
+        ? stored[PRIVATE_BOOKMARKS_FOLDER_ID_KEY]
+        : null;
+    const origins = stored[PRIVATE_BOOKMARK_ORIGINS_KEY];
+    privateBookmarkOrigins = origins && typeof origins === 'object' && !Array.isArray(origins)
+        ? origins
+        : {};
+}
+
+async function getFolderById(id) {
+    if (!id) return null;
+    try {
+        const nodes = await bookmarkApi('get', id);
+        const node = nodes?.[0];
+        return node && !node.url ? node : null;
+    } catch {
+        return null;
+    }
+}
+
+function findOtherBookmarksRoot(tree) {
+    const roots = tree?.[0]?.children || [];
+    return roots.find(node => node.id === OTHER_BOOKMARKS_ROOT_ID && !node.url)
+        || roots.find(node => /^(其他书签|其他收藏夹|other bookmarks)$/i.test(node.title || '') && !node.url)
+        || roots.find((node, index) => index === 1 && !node.url)
+        || null;
+}
+
+async function resolvePrivateBookmarksFolder({ create = false } = {}) {
+    await loadPrivateBookmarkState();
+    const tree = await bookmarkApi('getTree');
+    const otherRoot = findOtherBookmarksRoot(tree);
+    if (!otherRoot) throw new Error('无法定位“其他书签”目录');
+
+    let savedFolder = await getFolderById(privateBookmarksFolderId);
+    if (savedFolder) {
+        if (PRIVATE_BOOKMARKS_LEGACY_FOLDER_NAMES.has(savedFolder.title)) {
+            savedFolder = await bookmarkApi('update', savedFolder.id, { title: PRIVATE_BOOKMARKS_FOLDER_NAME });
+        }
+        return { folder: savedFolder, otherRoot };
+    }
+
+    if (privateBookmarksFolderId) {
+        privateBookmarksFolderId = null;
+        await localStorageSet({ [PRIVATE_BOOKMARKS_FOLDER_ID_KEY]: null });
+    }
+
+    const children = await bookmarkApi('getChildren', otherRoot.id);
+    const matches = (children || []).filter(node =>
+        !node.url
+        && (node.title === PRIVATE_BOOKMARKS_FOLDER_NAME || PRIVATE_BOOKMARKS_LEGACY_FOLDER_NAMES.has(node.title))
+    );
+    let folder = matches.length === 1 ? matches[0] : null;
+
+    if (folder && PRIVATE_BOOKMARKS_LEGACY_FOLDER_NAMES.has(folder.title)) {
+        folder = await bookmarkApi('update', folder.id, { title: PRIVATE_BOOKMARKS_FOLDER_NAME });
+    }
+
+    if (!folder && create) {
+        folder = await bookmarkApi('create', {
+            parentId: otherRoot.id,
+            title: PRIVATE_BOOKMARKS_FOLDER_NAME
+        });
+    }
+
+    if (folder) {
+        privateBookmarksFolderId = folder.id;
+        await localStorageSet({ [PRIVATE_BOOKMARKS_FOLDER_ID_KEY]: folder.id });
+    }
+
+    return { folder, otherRoot };
+}
+
+function collectBookmarkIds(node, ids = new Set()) {
+    if (!node) return ids;
+    if (node.id) ids.add(node.id);
+    node.children?.forEach(child => collectBookmarkIds(child, ids));
+    return ids;
+}
+
+async function preparePrivateBookmarksContext(options = {}) {
+    const context = await resolvePrivateBookmarksFolder(options);
+    if (context.folder) {
+        const subtree = await bookmarkApi('getSubTree', context.folder.id);
+        privateBookmarkDescendantIds = collectBookmarkIds(subtree?.[0]);
+    } else {
+        privateBookmarkDescendantIds = new Set();
+    }
+
+    const validOrigins = Object.fromEntries(
+        Object.entries(privateBookmarkOrigins).filter(([bookmarkId]) => privateBookmarkDescendantIds.has(bookmarkId))
+    );
+    if (Object.keys(validOrigins).length !== Object.keys(privateBookmarkOrigins).length) {
+        privateBookmarkOrigins = validOrigins;
+        await localStorageSet({ [PRIVATE_BOOKMARK_ORIGINS_KEY]: privateBookmarkOrigins });
+    }
+
+    return context;
+}
+
+function resetPrivateBookmarksDisclosure() {
+    privateBookmarksRevealed = false;
+    if (privateBookmarksContent) {
+        releaseCachedIconUrls(privateBookmarksContent);
+        privateBookmarksContent.replaceChildren();
+        privateBookmarksContent.hidden = true;
+    }
+    if (privateBookmarksHeader) {
+        privateBookmarksHeader.setAttribute('aria-expanded', 'false');
+    }
+    privateBookmarksHeader = null;
+    privateBookmarksContent = null;
+}
+
+async function setPrivateBookmarksExpanded(folder, expanded) {
+    if (!privateBookmarksHeader || !privateBookmarksContent) return;
+    privateBookmarksRevealed = expanded;
+    privateBookmarksHeader.setAttribute('aria-expanded', String(expanded));
+    privateBookmarksHeader.querySelector('.private-bookmarks-chevron')?.classList.toggle('expanded', expanded);
+
+    releaseCachedIconUrls(privateBookmarksContent);
+    privateBookmarksContent.replaceChildren();
+    privateBookmarksContent.hidden = !expanded;
+    if (!expanded) return;
+
+    if (!folder) {
+        privateBookmarksContent.appendChild(createPlaceholder('这里还没有书签'));
         return;
     }
 
-    bookmarkList.innerHTML = '';
-    if (bookmarkSearchInput) bookmarkSearchInput.value = '';
+    const content = privateBookmarksContent;
+    content.appendChild(createPlaceholder('正在读取…'));
+    try {
+        const subtree = await bookmarkApi('getSubTree', folder.id);
+        if (!privateBookmarksRevealed || content !== privateBookmarksContent || !sidebar.classList.contains('open')) return;
+        content.replaceChildren();
+        const children = subtree?.[0]?.children || [];
+        children.forEach(child => renderNode(child, content, { isPrivate: true }));
+        if (!content.children.length) content.appendChild(createPlaceholder('这里还没有书签'));
+    } catch {
+        if (content === privateBookmarksContent) {
+            content.replaceChildren(createPlaceholder('无法读取此文件夹'));
+            showBookmarkNotice('读取“稍后整理”失败，请稍后重试', 'error');
+        }
+    }
+}
 
-    // 1. Get Recent Bookmarks
-    chrome.bookmarks.getRecent(30, recentItems => {
-        if (recentItems && recentItems.length > 0) {
+function createPrivateBookmarksSection(folder) {
+    const section = document.createElement('section');
+    section.className = 'private-bookmarks-section';
+
+    const header = document.createElement('button');
+    header.type = 'button';
+    header.className = 'folder-header private-bookmarks-header';
+    header.setAttribute('aria-expanded', 'false');
+    header.setAttribute('aria-controls', 'privateBookmarksContent');
+
+    const chevron = createSvg(['m9 18 6-6-6-6']);
+    chevron.classList.add('private-bookmarks-chevron');
+    header.appendChild(chevron);
+    header.appendChild(createSvg(['M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z']));
+
+    const label = document.createElement('span');
+    label.className = 'private-bookmarks-label';
+    label.textContent = PRIVATE_BOOKMARKS_FOLDER_NAME;
+    header.appendChild(label);
+
+    const content = document.createElement('div');
+    content.id = 'privateBookmarksContent';
+    content.className = 'folder-content private-bookmarks-content';
+    content.hidden = true;
+
+    privateBookmarksHeader = header;
+    privateBookmarksContent = content;
+    header.addEventListener('click', () => setPrivateBookmarksExpanded(folder, content.hidden));
+
+    section.appendChild(header);
+    section.appendChild(content);
+    return section;
+}
+
+function showBookmarkContextMenu(x, y, node, isPrivate, trigger) {
+    hideContextMenu();
+    bookmarkMenuNode = { ...node };
+    bookmarkMenuIsPrivate = isPrivate;
+    bookmarkMenuTrigger = trigger;
+    movePrivateBookmarkLabel.textContent = isPrivate ? '移出稍后整理' : '移入稍后整理';
+    bookmarkContextMenu.dataset.private = String(isPrivate);
+    bookmarkContextMenu.classList.add('show');
+    bookmarkContextMenu.setAttribute('aria-hidden', 'false');
+    const rect = bookmarkContextMenu.getBoundingClientRect();
+    const left = Math.min(x, window.innerWidth - rect.width - 8);
+    const top = Math.min(y, window.innerHeight - rect.height - 8);
+    bookmarkContextMenu.style.left = `${Math.max(8, left)}px`;
+    bookmarkContextMenu.style.top = `${Math.max(8, top)}px`;
+    movePrivateBookmarkBtn.focus();
+}
+
+function hideBookmarkContextMenu({ restoreFocus = false } = {}) {
+    if (!bookmarkContextMenu) return;
+    const trigger = bookmarkMenuTrigger;
+    bookmarkContextMenu.classList.remove('show');
+    bookmarkContextMenu.setAttribute('aria-hidden', 'true');
+    bookmarkMenuNode = null;
+    bookmarkMenuIsPrivate = false;
+    bookmarkMenuTrigger = null;
+    if (restoreFocus) trigger?.focus();
+}
+
+async function refreshBookmarksAfterMutation({ revealPrivate = false } = {}) {
+    privateBookmarksRevealed = revealPrivate;
+    const query = bookmarkSearchInput?.value.trim().toLowerCase();
+    if (query) await searchBookmarks(query);
+    else await loadBookmarks({ preserveSearch: true, revealPrivate });
+}
+
+async function moveBookmarkToPrivate(node) {
+    const { folder } = await preparePrivateBookmarksContext({ create: true });
+    if (!folder) throw new Error('无法创建稍后整理目录');
+
+    const previousOrigins = { ...privateBookmarkOrigins };
+    privateBookmarkOrigins[node.id] = {
+        parentId: node.parentId,
+        index: Number.isInteger(node.index) ? node.index : 0
+    };
+    await localStorageSet({ [PRIVATE_BOOKMARK_ORIGINS_KEY]: privateBookmarkOrigins });
+
+    try {
+        await bookmarkApi('move', node.id, { parentId: folder.id });
+    } catch (error) {
+        privateBookmarkOrigins = previousOrigins;
+        await localStorageSet({ [PRIVATE_BOOKMARK_ORIGINS_KEY]: privateBookmarkOrigins }).catch(() => {});
+        throw error;
+    }
+
+    showBookmarkNotice('已移入“稍后整理”');
+    try {
+        await refreshBookmarksAfterMutation();
+    } catch {
+        showBookmarkNotice('已移入“稍后整理”，请重新打开收藏夹刷新', 'error');
+    }
+}
+
+async function restorePrivateBookmark(node) {
+    const { otherRoot } = await preparePrivateBookmarksContext();
+    const origin = privateBookmarkOrigins[node.id];
+    const originalParent = await getFolderById(origin?.parentId);
+    const fallbackUsed = !originalParent;
+    const destination = {
+        parentId: originalParent?.id || otherRoot.id
+    };
+    if (originalParent && Number.isInteger(origin?.index)) destination.index = origin.index;
+
+    await bookmarkApi('move', node.id, destination);
+    delete privateBookmarkOrigins[node.id];
+    let originCleanupFailed = false;
+    try {
+        await localStorageSet({ [PRIVATE_BOOKMARK_ORIGINS_KEY]: privateBookmarkOrigins });
+    } catch {
+        originCleanupFailed = true;
+    }
+
+    if (originCleanupFailed) {
+        showBookmarkNotice('书签已移出，但原位置记录清理失败', 'error');
+    } else {
+        showBookmarkNotice(fallbackUsed ? '原文件夹已失效，已移到“其他书签”' : '已移回原位置');
+    }
+    try {
+        await refreshBookmarksAfterMutation({ revealPrivate: true });
+    } catch {
+        showBookmarkNotice('书签已移出，请重新打开收藏夹刷新', 'error');
+    }
+}
+
+movePrivateBookmarkBtn?.addEventListener('click', async () => {
+    const node = bookmarkMenuNode;
+    const isPrivate = bookmarkMenuIsPrivate;
+    const trigger = bookmarkMenuTrigger;
+    if (!node) return;
+    movePrivateBookmarkBtn.disabled = true;
+    hideBookmarkContextMenu();
+    try {
+        if (isPrivate) await restorePrivateBookmark(node);
+        else await moveBookmarkToPrivate(node);
+    } catch (error) {
+        showBookmarkNotice(isPrivate ? '移出失败，书签仍保留在“稍后整理”' : '移入失败，书签位置未改变', 'error');
+        trigger?.focus();
+    } finally {
+        movePrivateBookmarkBtn.disabled = false;
+    }
+});
+
+function createBookmarkItem(node, { isPrivate = false } = {}) {
+    const safeUrl = getSafeBookmarkUrl(node.url);
+    if (!safeUrl) return null;
+
+    const item = document.createElement('div');
+    item.className = 'bookmark-item';
+    item.dataset.bookmarkId = node.id || '';
+
+    const link = document.createElement('a');
+    link.className = 'bookmark-link';
+    link.href = safeUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.setAttribute('aria-label', `${node.title || safeUrl}，按 Shift+F10 管理私密状态`);
+    link.appendChild(createBookmarkIcon(safeUrl, node.title || safeUrl, 32));
+
+    link.addEventListener('contextmenu', event => {
+        event.preventDefault();
+        showBookmarkContextMenu(event.clientX, event.clientY, node, isPrivate, link);
+    });
+    link.addEventListener('keydown', event => {
+        if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+        event.preventDefault();
+        const rect = link.getBoundingClientRect();
+        showBookmarkContextMenu(rect.left + 20, rect.top + Math.min(40, rect.height), node, isPrivate, link);
+    });
+
+    const title = document.createElement('span');
+    title.textContent = node.title || safeUrl;
+    link.appendChild(title);
+    item.appendChild(link);
+
+    const isAdded = desktopTags.some(tag => tag.url === safeUrl || tag.url === node.url);
+    if (isAdded) {
+        item.appendChild(createAddedBadge());
+    } else {
+        const addButton = document.createElement('button');
+        addButton.type = 'button';
+        addButton.className = 'add-btn';
+        addButton.setAttribute('aria-label', `添加${node.title || safeUrl}到桌面`);
+        addButton.appendChild(createSvg(['M12 5v14', 'M5 12h14']));
+        addButton.addEventListener('click', event => {
+            event.stopPropagation();
+            if (addTag({ url: safeUrl, title: node.title || safeUrl })) {
+                addButton.replaceWith(createAddedBadge());
+            }
+        });
+        item.appendChild(addButton);
+    }
+
+    return item;
+}
+
+async function searchBookmarks(query) {
+    if (typeof chrome === 'undefined' || !chrome.bookmarks) return;
+    const requestId = ++bookmarkLoadRequestId;
+    resetPrivateBookmarksDisclosure();
+    try {
+        const [{ folder }, results] = await Promise.all([
+            preparePrivateBookmarksContext(),
+            bookmarkApi('search', query)
+        ]);
+        if (requestId !== bookmarkLoadRequestId || !sidebar.classList.contains('open')) return;
+        releaseCachedIconUrls(bookmarkList);
+        bookmarkList.replaceChildren();
+
+        const bookmarks = (results || []).filter(item =>
+            item.url
+            && getSafeBookmarkUrl(item.url)
+            && !privateBookmarkDescendantIds.has(item.id)
+        );
+        if (bookmarks.length === 0) {
+            bookmarkList.appendChild(createPlaceholder('未找到匹配的书签'));
+        } else {
+            bookmarks.forEach(node => {
+                const item = createBookmarkItem(node);
+                if (item) bookmarkList.appendChild(item);
+            });
+        }
+
+        bookmarkList.appendChild(createPrivateBookmarksSection(folder));
+    } catch {
+        if (requestId !== bookmarkLoadRequestId) return;
+        releaseCachedIconUrls(bookmarkList);
+        bookmarkList.replaceChildren(createPlaceholder('书签搜索失败'));
+    }
+}
+
+async function loadBookmarks({ preserveSearch = false, revealPrivate = privateBookmarksRevealed } = {}) {
+    if (typeof chrome === 'undefined' || !chrome.bookmarks) {
+        releaseCachedIconUrls(bookmarkList);
+        bookmarkList.replaceChildren(createPlaceholder('书签功能仅在扩展中可用'));
+        return;
+    }
+
+    const requestId = ++bookmarkLoadRequestId;
+    releaseCachedIconUrls(bookmarkList);
+    bookmarkList.replaceChildren(createPlaceholder('正在读取书签…'));
+    if (bookmarkSearchInput && !preserveSearch) bookmarkSearchInput.value = '';
+    try {
+        const [{ folder }, recentItems, tree] = await Promise.all([
+            preparePrivateBookmarksContext(),
+            bookmarkApi('getRecent', 30),
+            bookmarkApi('getTree')
+        ]);
+        if (requestId !== bookmarkLoadRequestId || !sidebar.classList.contains('open')) return;
+        releaseCachedIconUrls(bookmarkList);
+        bookmarkList.replaceChildren();
+
+        const visibleRecentItems = (recentItems || []).filter(item =>
+            item.url
+            && getSafeBookmarkUrl(item.url)
+            && !privateBookmarkDescendantIds.has(item.id)
+        );
+        if (visibleRecentItems.length > 0) {
             const recentFolder = {
                 title: '最近添加',
-                children: recentItems
+                children: visibleRecentItems
             };
             renderNode(recentFolder, bookmarkList);
 
-            // Add separator
             const separator = document.createElement('div');
-            separator.style.borderBottom = '1px solid rgba(255,255,255,0.15)';
-            separator.style.margin = '10px 12px';
+            separator.className = 'bookmark-separator';
             bookmarkList.appendChild(separator);
         }
 
-        // 2. Get Full Tree
-        chrome.bookmarks.getTree(tree => {
-            tree[0].children?.forEach(node => renderNode(node, bookmarkList));
-        });
-    });
+        tree?.[0]?.children?.forEach(node => renderNode(node, bookmarkList));
+        const privateSeparator = document.createElement('div');
+        privateSeparator.className = 'bookmark-separator private-bookmarks-separator';
+        bookmarkList.appendChild(privateSeparator);
+        bookmarkList.appendChild(createPrivateBookmarksSection(folder));
+        if (revealPrivate) await setPrivateBookmarksExpanded(folder, true);
+    } catch {
+        if (requestId !== bookmarkLoadRequestId) return;
+        releaseCachedIconUrls(bookmarkList);
+        bookmarkList.replaceChildren(createPlaceholder('无法读取书签'));
+    }
 }
 
-function renderNode(node, container) {
+function renderNode(node, container, { isPrivate = false } = {}) {
+    if (!isPrivate && node.id && privateBookmarkDescendantIds.has(node.id)) return;
     if (node.url) {
-        const div = document.createElement('div');
-        div.className = 'bookmark-item';
-        const isAdded = desktopTags.some(t => t.url === node.url);
-        const host = new URL(node.url).hostname;
-
-        div.innerHTML = `
-      <a class="bookmark-link" href="${node.url}" target="_blank">
-        <img src="https://www.google.com/s2/favicons?domain=${host}&sz=32" alt="">
-        <span>${node.title || node.url}</span>
-      </a>
-      ${isAdded
-                ? '<span class="added-badge">✓ 已添加</span>'
-                : `<button class="add-btn" data-url="${node.url}" data-title="${node.title || ''}" data-host="${host}">
-            <svg viewBox="0 0 24 24" stroke-width="2" fill="none"><path d="M12 5v14M5 12h14"/></svg>
-           </button>`
-            }
-    `;
-
-        const addBtn = div.querySelector('.add-btn');
-        addBtn?.addEventListener('click', e => {
-            e.stopPropagation();
-            const tag = {
-                url: addBtn.dataset.url,
-                title: addBtn.dataset.title,
-                icon: `https://www.google.com/s2/favicons?domain=${addBtn.dataset.host}&sz=256`
-            };
-            if (addTag(tag)) {
-                addBtn.outerHTML = '<span class="added-badge">✓ 已添加</span>';
-            }
-        });
-
-        container.appendChild(div);
+        const item = createBookmarkItem(node, { isPrivate });
+        if (item) container.appendChild(item);
     } else if (node.children) {
         const folder = document.createElement('div');
-        const header = document.createElement('div');
+        folder.className = 'bookmark-folder';
+        const header = document.createElement('button');
+        header.type = 'button';
         header.className = 'folder-header';
-        header.innerHTML = `
-      <svg viewBox="0 0 24 24" stroke-width="2" fill="none"><path d="m9 18 6-6-6-6"/></svg>
-      <svg viewBox="0 0 24 24" stroke-width="2" fill="none">
-        <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>
-      </svg>
-      <span>${node.title || '文件夹'}</span>
-    `;
+        header.setAttribute('aria-expanded', 'false');
+        header.appendChild(createSvg(['m9 18 6-6-6-6']));
+        header.appendChild(createSvg(['M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z']));
+        const label = document.createElement('span');
+        label.textContent = node.title || '文件夹';
+        header.appendChild(label);
 
         const content = document.createElement('div');
         content.className = 'folder-content';
+        content.hidden = true;
 
         header.onclick = () => {
-            const open = content.style.display !== 'block';
-            content.style.display = open ? 'block' : 'none';
+            const open = content.hidden;
+            content.hidden = !open;
+            header.setAttribute('aria-expanded', String(open));
             header.querySelector('svg').style.transform = open ? 'rotate(90deg)' : '';
         };
 
-        node.children.forEach(c => renderNode(c, content));
+        node.children.forEach(c => renderNode(c, content, { isPrivate }));
         folder.appendChild(header);
         folder.appendChild(content);
         container.appendChild(folder);
@@ -402,10 +1277,12 @@ function renderNode(node, container) {
 }
 
 // ============ DESKTOP TAGS ============
-const PAGE_SIZE = 21; // 7 columns x 3 rows
-let currentPage = 0;
-let dragSrcEl = null;
-let isInitialRender = true; // Track if this is the first render
+function getPageSize() {
+    if (window.innerWidth >= 1100) return 21;
+    if (window.innerWidth >= 800) return 15;
+    if (window.innerWidth >= 560) return 12;
+    return 9;
+}
 
 function addTag(tag) {
     if (desktopTags.some(t => t.url === tag.url)) return false;
@@ -414,7 +1291,7 @@ function addTag(tag) {
     saveTags();
 
     // Jump to the last page where the new tag is added
-    const totalPages = Math.ceil(desktopTags.length / PAGE_SIZE);
+    const totalPages = Math.ceil(desktopTags.length / currentPageSize);
     currentPage = totalPages - 1;
 
     renderTags();
@@ -426,7 +1303,7 @@ function removeTag(url) {
     saveTags();
 
     // Adjust page if current page becomes empty
-    const totalPages = Math.ceil(desktopTags.length / PAGE_SIZE) || 1;
+    const totalPages = Math.ceil(desktopTags.length / currentPageSize) || 1;
     if (currentPage >= totalPages) currentPage = totalPages - 1;
 
     renderTags();
@@ -434,57 +1311,314 @@ function removeTag(url) {
 }
 
 function saveTags() {
-    chrome?.storage?.local.set({ desktopTags });
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        chrome.storage.local.set({ desktopTags });
+    } else {
+        localStorage.setItem('desktopTags', JSON.stringify(desktopTags));
+    }
+}
+
+function normalizeStoredIcon(iconUrl) {
+    if (!iconUrl || typeof iconUrl !== 'string') return undefined;
+    if (iconUrl.includes('google.com/s2/favicons')) return undefined;
+
+    try {
+        const url = new URL(iconUrl);
+        if (url.hostname === 'cdn.simpleicons.org') {
+            const slug = url.pathname.split('/').filter(Boolean)[0]?.toLowerCase();
+            if (slug && popularIcons.includes(slug)) return `${BRAND_ICON_DIR}/${slug}.svg`;
+            return undefined;
+        }
+    } catch {
+        // 相对路径和 data URL 会在下面原样保留。
+    }
+
+    return iconUrl;
+}
+
+function migrateStoredTags(tags) {
+    let changed = false;
+    const migrated = tags.filter(tag => tag && typeof tag.url === 'string').map(tag => {
+        const icon = normalizeStoredIcon(tag.icon);
+        if (icon !== tag.icon) changed = true;
+        const nextTag = { url: tag.url, title: String(tag.title || tag.url) };
+        if (icon) nextTag.icon = icon;
+        return nextTag;
+    });
+    return { migrated, changed: changed || migrated.length !== tags.length };
 }
 
 function loadTags() {
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
         chrome.storage.local.get(['desktopTags'], r => {
-            if (r.desktopTags) {
-                desktopTags = r.desktopTags;
+            if (Array.isArray(r.desktopTags)) {
+                const result = migrateStoredTags(r.desktopTags);
+                desktopTags = result.migrated;
+                if (result.changed) saveTags();
             } else {
-                // Try localStorage fallback if chrome storage is empty (migration/dev)
                 const local = localStorage.getItem('desktopTags');
                 if (local) {
-                    try { desktopTags = JSON.parse(local); } catch (e) { }
+                    try {
+                        const parsed = JSON.parse(local);
+                        if (Array.isArray(parsed)) desktopTags = migrateStoredTags(parsed).migrated;
+                    } catch (error) {
+                        console.warn('本地标签数据无法解析。', error);
+                    }
                 }
             }
             renderTags();
         });
     } else {
-        // Fallback for non-extension environment
         const local = localStorage.getItem('desktopTags');
         if (local) {
-            try { desktopTags = JSON.parse(local); } catch (e) { }
+            try {
+                const parsed = JSON.parse(local);
+                if (Array.isArray(parsed)) desktopTags = migrateStoredTags(parsed).migrated;
+            } catch (error) {
+                console.warn('本地标签数据无法解析。', error);
+            }
         }
         renderTags();
     }
 }
 
-// Get the best icon URL for a tag
-function getBestIconUrl(iconUrl, siteUrl) {
-    // If iconUrl is a custom icon (data: URL, Simple Icons, or other custom source), use it directly
-    if (iconUrl && (
-        iconUrl.startsWith('data:') ||
-        iconUrl.includes('simpleicons.org') ||
-        !iconUrl.includes('s2/favicons')
-    )) {
-        return iconUrl;
-    }
-
-    // Otherwise, use Google's favicon service with high resolution
+function getFaviconUrl(pageUrl, size = 64) {
     try {
-        const url = new URL(siteUrl);
-        const domain = url.hostname;
-        return `https://www.google.com/s2/favicons?domain=${domain}&sz=256`;
+        const page = new URL(pageUrl);
+        if (!['http:', 'https:'].includes(page.protocol)) return null;
+        if (typeof chrome === 'undefined' || !chrome.runtime?.getURL) return null;
+        const favicon = new URL(chrome.runtime.getURL('/_favicon/'));
+        favicon.searchParams.set('pageUrl', page.href);
+        favicon.searchParams.set('size', String(size));
+        return favicon.href;
     } catch {
-        return iconUrl;
+        return null;
     }
 }
 
-// Generate a beautiful gradient SVG fallback icon
+const localBrandIconHosts = new Map([
+    ['notebooklm.google.com', 'notebooklm'],
+    ['scholar.google.com', 'googlescholar'],
+    ['gemini.google.com', 'googlegemini'],
+    ['aistudio.google.com', 'googlegemini'],
+    ['ai.google.dev', 'googlegemini'],
+    ['chatgpt.com', 'chatgpt'],
+    ['openai.com', 'openai'],
+    ['claude.ai', 'claude'],
+    ['anthropic.com', 'claude'],
+    ['github.com', 'github'],
+    ['bilibili.com', 'bilibili'],
+    ['youtube.com', 'youtube'],
+    ['notion.so', 'notion'],
+    ['figma.com', 'figma'],
+    ['reddit.com', 'reddit'],
+    ['zhihu.com', 'zhihu'],
+    ['weibo.com', 'weibo'],
+    ['taobao.com', 'taobao'],
+    ['baidu.com', 'baidu']
+]);
+
+function getLocalBrandIcon(siteUrl) {
+    try {
+        const hostname = new URL(siteUrl).hostname.toLowerCase().replace(/^www\./, '');
+        for (const [domain, iconName] of localBrandIconHosts) {
+            if (hostname === domain || hostname.endsWith(`.${domain}`)) {
+                return `${BRAND_ICON_DIR}/${iconName}.svg`;
+            }
+        }
+        if (hostname === 'google.com') return 'assets/search-engines/google.svg';
+    } catch {
+        // 非网页地址继续使用本地字母图标。
+    }
+    return null;
+}
+
+function getFaviconCacheKey(siteUrl) {
+    try {
+        const url = new URL(siteUrl);
+        if (!['http:', 'https:'].includes(url.protocol)) return null;
+        return `site:${url.protocol}//${url.host.toLowerCase()}`;
+    } catch {
+        return null;
+    }
+}
+
+function getIconCacheEntry(cacheKey) {
+    if (!cacheKey) return Promise.resolve(null);
+    return initDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(ICON_CACHE_STORE_NAME, 'readonly');
+        const request = tx.objectStore(ICON_CACHE_STORE_NAME).get(cacheKey);
+        tx.oncomplete = () => {
+            db.close();
+            resolve(request.result || null);
+        };
+        tx.onerror = () => {
+            db.close();
+            reject(tx.error);
+        };
+        tx.onabort = () => {
+            db.close();
+            reject(tx.error);
+        };
+    }));
+}
+
+function saveIconCacheEntry(cacheKey, blob, sourceUrl) {
+    return initDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(ICON_CACHE_STORE_NAME, 'readwrite');
+        tx.objectStore(ICON_CACHE_STORE_NAME).put({
+            blob,
+            sourceUrl,
+            size: FAVICON_REQUEST_SIZE,
+            updatedAt: Date.now()
+        }, cacheKey);
+        tx.oncomplete = () => {
+            db.close();
+            resolve();
+        };
+        tx.onerror = () => {
+            db.close();
+            reject(tx.error);
+        };
+        tx.onabort = () => {
+            db.close();
+            reject(tx.error);
+        };
+    }));
+}
+
+async function fetchIconBlob(sourceUrl) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    try {
+        const response = await fetch(sourceUrl, {
+            cache: 'no-store',
+            credentials: 'omit',
+            signal: controller.signal
+        });
+        if (!response.ok) throw new Error(`图标请求失败：${response.status}`);
+        const blob = await response.blob();
+        if (!blob.type.startsWith('image/') || blob.size < 64) {
+            throw new Error('图标响应不是有效图片');
+        }
+        return blob;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+function refreshIconCache(cacheKey, sourceUrl) {
+    if (pendingFaviconRefreshes.has(cacheKey)) {
+        return pendingFaviconRefreshes.get(cacheKey);
+    }
+
+    const refresh = fetchIconBlob(sourceUrl)
+        .then(async blob => {
+            await saveIconCacheEntry(cacheKey, blob, sourceUrl);
+            return { blob, sourceUrl, size: FAVICON_REQUEST_SIZE, updatedAt: Date.now() };
+        })
+        .finally(() => pendingFaviconRefreshes.delete(cacheKey));
+
+    pendingFaviconRefreshes.set(cacheKey, refresh);
+    return refresh;
+}
+
+function revokeImageObjectUrl(image) {
+    const objectUrl = image.dataset.iconObjectUrl;
+    if (!objectUrl) return;
+    URL.revokeObjectURL(objectUrl);
+    delete image.dataset.iconObjectUrl;
+}
+
+function setImageSource(image, source, fallback) {
+    revokeImageObjectUrl(image);
+    image.onerror = () => {
+        image.onerror = null;
+        revokeImageObjectUrl(image);
+        image.src = fallback;
+    };
+    image.src = source || fallback;
+}
+
+function setImageBlob(image, blob, fallback) {
+    revokeImageObjectUrl(image);
+    const objectUrl = URL.createObjectURL(blob);
+    image.dataset.iconObjectUrl = objectUrl;
+    image.onerror = () => {
+        image.onerror = null;
+        revokeImageObjectUrl(image);
+        image.src = fallback;
+    };
+    image.src = objectUrl;
+}
+
+function releaseCachedIconUrls(container) {
+    container.querySelectorAll('img').forEach(image => {
+        bookmarkIconObserver?.unobserve(image);
+        bookmarkIconMetadata.delete(image);
+        revokeImageObjectUrl(image);
+    });
+}
+
+function loadSiteIcon(image, iconUrl, siteUrl, title) {
+    const fallback = generateFallbackIcon(title);
+    const normalizedIcon = normalizeStoredIcon(iconUrl);
+    const localBrandIcon = normalizedIcon ? null : getLocalBrandIcon(siteUrl);
+
+    if (localBrandIcon || (normalizedIcon && !/^https?:\/\//i.test(normalizedIcon))) {
+        setImageSource(image, localBrandIcon || normalizedIcon, fallback);
+        return;
+    }
+
+    const isCustomRemoteIcon = Boolean(normalizedIcon);
+    const sourceUrl = normalizedIcon || getFaviconUrl(siteUrl, FAVICON_REQUEST_SIZE);
+    const cacheKey = isCustomRemoteIcon
+        ? `custom:${normalizedIcon}`
+        : getFaviconCacheKey(siteUrl);
+
+    if (!sourceUrl || !cacheKey) {
+        setImageSource(image, sourceUrl, fallback);
+        return;
+    }
+
+    image.dataset.iconCacheKey = cacheKey;
+    setImageSource(image, fallback, fallback);
+
+    getIconCacheEntry(cacheKey).then(entry => {
+        if (!image.isConnected || image.dataset.iconCacheKey !== cacheKey) return;
+
+        if (entry?.blob instanceof Blob) {
+            setImageBlob(image, entry.blob, fallback);
+        } else {
+            setImageSource(image, sourceUrl, fallback);
+        }
+
+        const isFresh = entry?.updatedAt && Date.now() - entry.updatedAt < FAVICON_CACHE_MAX_AGE;
+        if (isFresh) return;
+
+        scheduleIdleTask(() => {
+            refreshIconCache(cacheKey, sourceUrl).then(refreshed => {
+                if (!image.isConnected || image.dataset.iconCacheKey !== cacheKey) return;
+                setImageBlob(image, refreshed.blob, fallback);
+            }).catch(() => {
+                // 保留当前图标或本地兜底；网络恢复后会再次尝试。
+            });
+        });
+    }).catch(() => {
+        if (image.isConnected && image.dataset.iconCacheKey === cacheKey) {
+            setImageSource(image, sourceUrl, fallback);
+        }
+    });
+}
+
+function escapeXml(value) {
+    return String(value).replace(/[&<>"']/g, character => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;'
+    })[character]);
+}
+
 function generateFallbackIcon(title) {
-    const char = (title || '?').charAt(0).toUpperCase();
+    const char = escapeXml((title || '?').charAt(0).toUpperCase());
 
     // Generate consistent color based on first character
     const colors = [
@@ -512,7 +1646,7 @@ function generateFallbackIcon(title) {
                 <stop offset="100%" style="stop-color:${color2}"/>
             </linearGradient>
         </defs>
-        <rect width="100" height="100" rx="22" fill="url(%23grad)"/>
+        <rect width="100" height="100" rx="22" fill="url(#grad)"/>
         <text x="50" y="62" text-anchor="middle" font-family="system-ui,-apple-system,sans-serif" font-size="45" font-weight="600" fill="white">${char}</text>
     </svg>`;
 
@@ -520,69 +1654,64 @@ function generateFallbackIcon(title) {
 }
 
 function renderTags() {
-    tagsGrid.innerHTML = '';
-    // Render Dots
-    // Dots removed per user request
+    releaseCachedIconUrls(tagsGrid);
+    tagsGrid.replaceChildren();
 
-    const totalPages = Math.ceil(desktopTags.length / PAGE_SIZE) || 1;
+    const totalPages = Math.ceil(desktopTags.length / currentPageSize) || 1;
+    currentPage = Math.min(currentPage, totalPages - 1);
+    const hasMultiplePages = totalPages > 1;
 
-    // Update Buttons Logic (Always run this, regardless of totalPages)
-    prevPageBtn.classList.remove('hidden');
-    nextPageBtn.classList.remove('hidden');
+    prevPageBtn.classList.toggle('hidden', !hasMultiplePages);
+    nextPageBtn.classList.toggle('hidden', !hasMultiplePages);
 
     if (currentPage > 0) {
         prevPageBtn.classList.remove('disabled');
+        prevPageBtn.disabled = false;
         prevPageBtn.onclick = () => {
             currentPage--;
             renderTags();
         };
     } else {
         prevPageBtn.classList.add('disabled');
+        prevPageBtn.disabled = true;
         prevPageBtn.onclick = null;
     }
 
     if (currentPage < totalPages - 1) {
         nextPageBtn.classList.remove('disabled');
+        nextPageBtn.disabled = false;
         nextPageBtn.onclick = () => {
             currentPage++;
             renderTags();
         };
     } else {
         nextPageBtn.classList.add('disabled');
+        nextPageBtn.disabled = true;
         nextPageBtn.onclick = null;
     }
 
-    // Slice tags for current page
-    const start = currentPage * PAGE_SIZE;
-    const pageTags = desktopTags.slice(start, start + PAGE_SIZE);
+    const start = currentPage * currentPageSize;
+    const pageTags = desktopTags.slice(start, start + currentPageSize);
 
     pageTags.forEach((tag, i) => {
         const a = document.createElement('a');
-        a.href = tag.url;
+        const safeUrl = getSafeBookmarkUrl(tag.url);
+        a.href = safeUrl || '#';
         a.className = isInitialRender ? 'tag-item animate-in' : 'tag-item';
-        a.draggable = true; // Enable drag
-        a.dataset.index = start + i; // Store global index
-        if (isInitialRender) {
-            a.style.animationDelay = `${i * 0.05}s`;
-        }
+        a.draggable = true;
+        a.dataset.index = start + i;
+        a.dataset.url = tag.url;
+        a.setAttribute('aria-label', safeUrl ? `打开${tag.title}` : `${tag.title}，地址不可用`);
+        if (!safeUrl) a.setAttribute('aria-disabled', 'true');
 
-        // Create icon element
         const img = document.createElement('img');
         img.className = 'tag-icon';
         img.draggable = false;
         img.alt = '';
+        img.decoding = 'async';
 
-        // Set up icon with fallback
-        const iconUrl = getBestIconUrl(tag.icon, tag.url);
-        const fallbackSvg = generateFallbackIcon(tag.title);
+        loadSiteIcon(img, tag.icon, tag.url, tag.title);
 
-        img.src = iconUrl;
-        img.onerror = function () {
-            this.onerror = null;
-            this.src = fallbackSvg;
-        };
-
-        // Create title element
         const span = document.createElement('span');
         span.className = 'tag-title';
         span.textContent = truncate(tag.title, 10);
@@ -590,30 +1719,47 @@ function renderTags() {
         a.appendChild(img);
         a.appendChild(span);
 
-        // Context Menu
         a.oncontextmenu = e => {
             e.preventDefault();
-            showContextMenu(e, tag.url);
+            showContextMenu(e.clientX, e.clientY, tag.url, a);
         };
 
-        // Click handling (prevent navigation when dragging)
+        a.addEventListener('keydown', e => {
+            if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+                e.preventDefault();
+                const rect = a.getBoundingClientRect();
+                showContextMenu(rect.left + 12, rect.top + 12, tag.url, a);
+            }
+        });
+
         a.onclick = e => {
-            if (a.classList.contains('dragging')) {
+            if (!safeUrl || a.classList.contains('dragging')) {
                 e.preventDefault();
             }
         };
 
-        // Drag Events
         addDragHandlers(a);
 
         tagsGrid.appendChild(a);
     });
 
-    // After first render, disable initial animation
     if (isInitialRender) {
         isInitialRender = false;
     }
 }
+
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+        const nextPageSize = getPageSize();
+        if (nextPageSize === currentPageSize) return;
+        const firstVisibleIndex = currentPage * currentPageSize;
+        currentPageSize = nextPageSize;
+        currentPage = Math.floor(firstVisibleIndex / currentPageSize);
+        renderTags();
+    }, 120);
+});
 
 function addDragHandlers(el) {
     let isDragging = false;
@@ -667,9 +1813,9 @@ function addDragHandlers(el) {
                 top: ${initialY}px;
                 z-index: 1000;
                 pointer-events: none;
-                transform: scale(1.05);
+                transform: translate3d(0, 0, 0) scale(1.05);
                 opacity: 1;
-                transition: transform 0.15s ease, box-shadow 0.15s ease;
+                transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.15s ease-out;
                 box-shadow: 0 15px 35px rgba(0,0,0,0.3);
             `;
             document.body.appendChild(dragClone);
@@ -677,9 +1823,7 @@ function addDragHandlers(el) {
 
         if (isDragging && dragClone) {
             e.preventDefault(); // Only prevent default when actually dragging
-            // Move clone with cursor
-            dragClone.style.left = (initialX + deltaX) + 'px';
-            dragClone.style.top = (initialY + deltaY) + 'px';
+            dragClone.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0) scale(1.05)`;
 
             // Find element under cursor
             dragClone.style.visibility = 'hidden';
@@ -726,10 +1870,8 @@ function addDragHandlers(el) {
             } else {
                 // Return clone to original position
                 if (dragClone) {
-                    dragClone.style.transition = 'all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)';
-                    dragClone.style.left = initialX + 'px';
-                    dragClone.style.top = initialY + 'px';
-                    dragClone.style.transform = 'scale(1)';
+                    dragClone.style.transition = 'transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease-out';
+                    dragClone.style.transform = 'translate3d(0, 0, 0) scale(1)';
                     dragClone.style.boxShadow = 'none';
 
                     setTimeout(() => {
@@ -762,10 +1904,10 @@ function performSwapAnimation(srcEl, targetEl, dragClone, callback) {
 
     // Animate clone to target position
     if (dragClone) {
-        dragClone.style.transition = 'all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)';
-        dragClone.style.left = targetRect.left + 'px';
-        dragClone.style.top = targetRect.top + 'px';
-        dragClone.style.transform = 'scale(1)';
+        const originX = Number.parseFloat(dragClone.style.left) || 0;
+        const originY = Number.parseFloat(dragClone.style.top) || 0;
+        dragClone.style.transition = 'transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease-out';
+        dragClone.style.transform = `translate3d(${targetRect.left - originX}px, ${targetRect.top - originY}px, 0) scale(1)`;
         dragClone.style.boxShadow = 'none';
     }
 
@@ -780,14 +1922,14 @@ function performSwapAnimation(srcEl, targetEl, dragClone, callback) {
 // Animate tag deletion with iOS-style effect
 function animateTagDeletion(url) {
     const items = Array.from(tagsGrid.querySelectorAll('.tag-item'));
-    const targetItem = items.find(item => item.getAttribute('href') === url);
+    const targetItem = items.find(item => item.dataset.url === url);
 
     if (targetItem) {
         // Get positions before removal
         const rects = items.map(item => item.getBoundingClientRect());
 
         // Animate the deleted item
-        targetItem.style.transition = 'all 0.3s cubic-bezier(0.4, 0, 1, 1)';
+        targetItem.style.transition = 'transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease-out';
         targetItem.style.transform = 'scale(0)';
         targetItem.style.opacity = '0';
 
@@ -797,7 +1939,7 @@ function animateTagDeletion(url) {
             saveTags();
 
             // Adjust page if needed
-            const totalPages = Math.ceil(desktopTags.length / PAGE_SIZE) || 1;
+            const totalPages = Math.ceil(desktopTags.length / currentPageSize) || 1;
             if (currentPage >= totalPages) currentPage = totalPages - 1;
 
             // Remove element and animate others
@@ -805,10 +1947,10 @@ function animateTagDeletion(url) {
 
             // Animate remaining items to fill gap
             const remainingItems = Array.from(tagsGrid.querySelectorAll('.tag-item'));
-            const start = currentPage * PAGE_SIZE;
+            const start = currentPage * currentPageSize;
 
             remainingItems.forEach((item, i) => {
-                const oldIndex = items.findIndex(old => old.getAttribute('href') === item.getAttribute('href'));
+                const oldIndex = items.findIndex(old => old.dataset.url === item.dataset.url);
                 if (oldIndex !== -1) {
                     const oldRect = rects[oldIndex];
                     const newRect = item.getBoundingClientRect();
@@ -820,7 +1962,7 @@ function animateTagDeletion(url) {
                         item.style.transition = 'none';
 
                         requestAnimationFrame(() => {
-                            item.style.transition = 'transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1)';
+                            item.style.transition = 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1)';
                             item.style.transform = 'translate(0, 0)';
                         });
                     }
@@ -833,7 +1975,7 @@ function animateTagDeletion(url) {
             if (sidebar.classList.contains('open')) loadBookmarks();
 
             // Full re-render only if we need to load items from next page
-            const expectedCount = desktopTags.slice(start, start + PAGE_SIZE).length;
+            const expectedCount = desktopTags.slice(start, start + currentPageSize).length;
             if (remainingItems.length === 0 && expectedCount > 0) {
                 // Page is empty but there are items to show - re-render
                 setTimeout(() => renderTags(), 350);
@@ -848,7 +1990,7 @@ function animateTagDeletion(url) {
 function removeTagDirect(url) {
     desktopTags = desktopTags.filter(t => t.url !== url);
     saveTags();
-    const totalPages = Math.ceil(desktopTags.length / PAGE_SIZE) || 1;
+    const totalPages = Math.ceil(desktopTags.length / currentPageSize) || 1;
     if (currentPage >= totalPages) currentPage = totalPages - 1;
     renderTags();
     if (sidebar.classList.contains('open')) loadBookmarks();
@@ -859,22 +2001,32 @@ function truncate(str, len) {
 }
 
 // ============ CONTEXT MENU ============
-function showContextMenu(e, url) {
+function showContextMenu(x, y, url, trigger) {
+    hideBookmarkContextMenu();
     contextTagUrl = url;
-    contextMenu.style.left = e.clientX + 'px';
-    contextMenu.style.top = e.clientY + 'px';
+    contextMenuTrigger = trigger;
     contextMenu.classList.add('show');
+    contextMenu.setAttribute('aria-hidden', 'false');
+    const rect = contextMenu.getBoundingClientRect();
+    const left = Math.min(x, window.innerWidth - rect.width - 8);
+    const top = Math.min(y, window.innerHeight - rect.height - 8);
+    contextMenu.style.left = `${Math.max(8, left)}px`;
+    contextMenu.style.top = `${Math.max(8, top)}px`;
+    contextMenu.querySelector('[role="menuitem"]')?.focus();
 }
 
-function hideContextMenu() {
+function hideContextMenu({ restoreFocus = false } = {}) {
+    if (restoreFocus) contextMenuTrigger?.focus();
     contextMenu.classList.remove('show');
+    contextMenu.setAttribute('aria-hidden', 'true');
     contextTagUrl = null;
+    contextMenuTrigger = null;
 }
 
 deleteTagBtn.onclick = () => {
     if (contextTagUrl) {
         animateTagDeletion(contextTagUrl);
-        hideContextMenu();
+        hideContextMenu({ restoreFocus: true });
     }
 };
 
@@ -885,7 +2037,8 @@ const popularIcons = [
     'slack', 'notion', 'figma', 'dribbble', 'behance', 'medium', 'stackoverflow', 'npm',
     'docker', 'kubernetes', 'react', 'vue', 'angular', 'nodejs', 'python', 'java',
     'bilibili', 'wechat', 'weibo', 'zhihu', 'taobao', 'alipay', 'baidu', 'tencent',
-    'openai', 'chatgpt', 'gmail', 'googledrive', 'googlecloud', 'firebase', 'vercel', 'netlify'
+    'openai', 'chatgpt', 'claude', 'googlegemini', 'googlescholar', 'notebooklm',
+    'gmail', 'googledrive', 'googlecloud', 'firebase', 'vercel', 'netlify'
 ];
 
 // Color icon fallbacks (for custom colored letters)
@@ -907,23 +2060,39 @@ const colorIcons = [
 let currentTab = 'brands';
 
 changeIconBtn.onclick = () => {
-    // Save the URL before hiding context menu (which clears contextTagUrl)
     const urlToEdit = contextTagUrl;
-    contextMenu.classList.remove('show'); // Hide menu without clearing URL
-    contextTagUrl = urlToEdit; // Restore the URL
+    contextTagUrl = urlToEdit;
     openIconPicker();
+    contextMenu.classList.remove('show');
+    contextMenu.setAttribute('aria-hidden', 'true');
 };
 
 function openIconPicker() {
+    lastFocusedElement = contextMenuTrigger || document.activeElement;
     iconPickerModal.classList.add('show');
     iconPickerOverlay.classList.add('show');
+    iconPickerModal.setAttribute('aria-hidden', 'false');
     iconSearchInput.value = '';
+    customIconError.textContent = '';
+    currentTab = 'brands';
+    document.querySelectorAll('.icon-tab').forEach(tab => {
+        const active = tab.dataset.tab === 'brands';
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', String(active));
+    });
+    iconGrid.style.display = 'grid';
+    customIconSection.style.display = 'none';
     loadIcons('brands');
+    iconSearchInput.focus();
 }
 
-function closeIconPickerModal() {
+function closeIconPickerModal({ restoreFocus = true } = {}) {
+    if (restoreFocus) (lastFocusedElement || contextMenuTrigger)?.focus?.();
     iconPickerModal.classList.remove('show');
     iconPickerOverlay.classList.remove('show');
+    iconPickerModal.setAttribute('aria-hidden', 'true');
+    contextTagUrl = null;
+    contextMenuTrigger = null;
 }
 
 closeIconPicker.onclick = closeIconPickerModal;
@@ -932,8 +2101,12 @@ iconPickerOverlay.onclick = closeIconPickerModal;
 // Tab switching
 document.querySelectorAll('.icon-tab').forEach(tab => {
     tab.onclick = () => {
-        document.querySelectorAll('.icon-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.icon-tab').forEach(t => {
+            t.classList.remove('active');
+            t.setAttribute('aria-selected', 'false');
+        });
         tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
         currentTab = tab.dataset.tab;
 
         if (currentTab === 'custom') {
@@ -945,11 +2118,25 @@ document.querySelectorAll('.icon-tab').forEach(tab => {
             loadIcons(currentTab);
         }
     };
+
+    tab.onkeydown = event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const tabs = Array.from(document.querySelectorAll('.icon-tab'));
+        const currentIndex = tabs.indexOf(tab);
+        let nextIndex = currentIndex;
+        if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+        if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        if (event.key === 'Home') nextIndex = 0;
+        if (event.key === 'End') nextIndex = tabs.length - 1;
+        event.preventDefault();
+        tabs[nextIndex].focus();
+        tabs[nextIndex].click();
+    };
 });
 
 // Load icons based on tab
 function loadIcons(tab, searchQuery = '') {
-    iconGrid.innerHTML = '<div class="icon-loading">加载中...</div>';
+    iconGrid.replaceChildren();
 
     if (tab === 'brands') {
         const icons = searchQuery
@@ -957,41 +2144,59 @@ function loadIcons(tab, searchQuery = '') {
             : popularIcons;
 
         if (icons.length === 0) {
-            iconGrid.innerHTML = '<div class="no-icons">未找到匹配的图标</div>';
+            const empty = document.createElement('div');
+            empty.className = 'no-icons';
+            empty.textContent = '未找到匹配的图标';
+            iconGrid.appendChild(empty);
             return;
         }
 
-        iconGrid.innerHTML = '';
         icons.forEach(name => {
-            const div = document.createElement('div');
-            div.className = 'icon-option';
-            div.title = name;
-            // Use Simple Icons CDN
-            const iconUrl = `https://cdn.simpleicons.org/${name}`;
-            div.innerHTML = `<img src="${iconUrl}" alt="${name}" onerror="this.style.display='none'">`;
-            div.onclick = () => selectIcon(iconUrl);
-            iconGrid.appendChild(div);
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'icon-option';
+            button.title = name;
+            button.setAttribute('role', 'option');
+            button.setAttribute('aria-label', name);
+            const iconUrl = `${BRAND_ICON_DIR}/${name}.svg`;
+            const image = document.createElement('img');
+            image.src = iconUrl;
+            image.alt = '';
+            image.onerror = () => image.replaceWith(document.createTextNode(name.charAt(0).toUpperCase()));
+            button.appendChild(image);
+            button.onclick = () => selectIcon(iconUrl);
+            iconGrid.appendChild(button);
         });
     } else if (tab === 'colors') {
-        iconGrid.innerHTML = '';
         colorIcons.forEach(icon => {
-            const div = document.createElement('div');
-            div.className = 'icon-option';
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'icon-option';
+            button.setAttribute('role', 'option');
+            button.setAttribute('aria-label', icon.name);
             const svg = generateColorIcon(icon.name, icon.colors);
-            div.innerHTML = `<img src="${svg}" alt="${icon.name}">`;
-            div.onclick = () => selectIcon(svg);
-            iconGrid.appendChild(div);
+            const image = document.createElement('img');
+            image.src = svg;
+            image.alt = '';
+            button.appendChild(image);
+            button.onclick = () => selectIcon(svg);
+            iconGrid.appendChild(button);
         });
 
-        // Add all letters A-Z
         'MNOPQRSTUVWXYZ0123456789'.split('').forEach((char, i) => {
             const colors = colorIcons[i % colorIcons.length].colors;
-            const div = document.createElement('div');
-            div.className = 'icon-option';
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'icon-option';
+            button.setAttribute('role', 'option');
+            button.setAttribute('aria-label', char);
             const svg = generateColorIcon(char, colors);
-            div.innerHTML = `<img src="${svg}" alt="${char}">`;
-            div.onclick = () => selectIcon(svg);
-            iconGrid.appendChild(div);
+            const image = document.createElement('img');
+            image.src = svg;
+            image.alt = '';
+            button.appendChild(image);
+            button.onclick = () => selectIcon(svg);
+            iconGrid.appendChild(button);
         });
     }
 }
@@ -1014,50 +2219,278 @@ iconSearchInput.oninput = (e) => {
 
 // Select an icon
 function selectIcon(iconUrl) {
-    console.log('selectIcon called with URL:', iconUrl);
-    console.log('contextTagUrl:', contextTagUrl);
+    if (!contextTagUrl) return;
 
-    if (!contextTagUrl) {
-        console.log('contextTagUrl is null, returning');
-        return;
-    }
-
-    // Update the tag's icon in desktopTags
     const tag = desktopTags.find(t => t.url === contextTagUrl);
-    console.log('Found tag:', tag);
 
     if (tag) {
         tag.icon = iconUrl;
         saveTags();
-        console.log('Tags saved, re-rendering');
         renderTags();
     }
 
-    closeIconPickerModal();
+    closeIconPickerModal({ restoreFocus: true });
     contextTagUrl = null;
+    contextMenuTrigger = null;
 }
 
-// Apply custom icon URL
 applyCustomIcon.onclick = () => {
     const url = customIconUrl.value.trim();
-    if (url && contextTagUrl) {
-        selectIcon(url);
+    customIconError.textContent = '';
+    if (!url || !contextTagUrl) return;
+
+    try {
+        const parsed = new URL(url);
+        if (!['https:', 'http:'].includes(parsed.protocol)) throw new Error('unsupported');
+        selectIcon(parsed.href);
         customIconUrl.value = '';
+    } catch {
+        customIconError.textContent = '请输入有效的 HTTP 或 HTTPS 图片地址';
+        customIconUrl.focus();
     }
 };
 
 document.addEventListener('click', (e) => {
+    if (bookmarkContextMenu.classList.contains('show') && !e.target.closest('#bookmarkContextMenu')) {
+        hideBookmarkContextMenu();
+    }
     // Only hide context menu and clear URL if icon picker is not open
     if (contextMenu.classList.contains('show')) {
+        if (contextMenu.contains(document.activeElement)) contextMenuTrigger?.focus();
         contextMenu.classList.remove('show');
-        // Only clear contextTagUrl if we're not opening the icon picker
+        contextMenu.setAttribute('aria-hidden', 'true');
         if (!iconPickerModal.classList.contains('show') &&
             !e.target.closest('#changeIconBtn')) {
             contextTagUrl = null;
+            contextMenuTrigger = null;
         }
     }
 });
 
-// ============ INIT ============
-loadTags();
+// ============ CLOCK SETTINGS ============
+const clockSettingsBtn = $('clockSettingsBtn');
+const clockSettingsModal = $('clockSettingsModal');
+const clockSettingsOverlay = $('clockSettingsOverlay');
+const closeClockSettings = $('closeClockSettings');
+const clockColorInput = $('clockColorInput');
+const clockColorText = $('clockColorText');
+const dateColorInput = $('dateColorInput');
+const dateColorText = $('dateColorText');
+const resetColorsBtn = $('resetColorsBtn');
+const showSecondsToggle = $('showSecondsToggle');
 
+function openClockSettings() {
+    lastFocusedElement = document.activeElement;
+    clockSettingsModal.classList.add('show');
+    clockSettingsOverlay.classList.add('show');
+    clockSettingsModal.setAttribute('aria-hidden', 'false');
+    clockSettingsBtn.setAttribute('aria-expanded', 'true');
+
+    // Load current colors from CSS variables
+    const clockColor = getComputedStyle(document.body).getPropertyValue('--clock-color').trim();
+    const dateColor = getComputedStyle(document.body).getPropertyValue('--date-color').trim();
+
+    clockColorInput.value = rgbToHex(clockColor) || '#ffffff';
+    clockColorText.value = clockColorInput.value;
+    dateColorInput.value = rgbToHex(dateColor) || '#ffffff';
+    dateColorText.value = dateColorInput.value;
+
+    showSecondsToggle.checked = showSeconds;
+    requestAnimationFrame(() => clockColorText.focus());
+}
+
+function closeClockSettingsModal({ restoreFocus = true } = {}) {
+    if (restoreFocus) (lastFocusedElement || clockSettingsBtn).focus?.();
+    clockSettingsModal.classList.remove('show');
+    clockSettingsOverlay.classList.remove('show');
+    clockSettingsModal.setAttribute('aria-hidden', 'true');
+    clockSettingsBtn.setAttribute('aria-expanded', 'false');
+}
+
+function rgbToHex(color) {
+    if (!color) return null;
+    if (color.startsWith('#')) return color;
+    const match = color.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
+    if (!match) return null;
+    const r = parseInt(match[1]);
+    const g = parseInt(match[2]);
+    const b = parseInt(match[3]);
+    return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+}
+
+function updateColor(type, value) {
+    if (!value) return;
+    document.body.style.setProperty(`--${type}-color`, value);
+    if (type === 'clock') {
+        clockColorInput.value = rgbToHex(value);
+        clockColorText.value = value;
+    } else {
+        dateColorInput.value = rgbToHex(value);
+        dateColorText.value = value;
+    }
+    saveColorSettings();
+}
+
+function saveColorSettings() {
+    const clockColor = document.body.style.getPropertyValue('--clock-color');
+    const dateColor = document.body.style.getPropertyValue('--date-color');
+    if (typeof chrome !== 'undefined') chrome.storage?.local.set({ clockColor, dateColor, showSeconds });
+    localStorage.setItem('clockColor', clockColor);
+    localStorage.setItem('dateColor', dateColor);
+    localStorage.setItem('showSeconds', showSeconds);
+}
+
+function loadColorSettings() {
+    const applySettings = (settings) => {
+        if (settings.clockColor) document.body.style.setProperty('--clock-color', settings.clockColor);
+        if (settings.dateColor) document.body.style.setProperty('--date-color', settings.dateColor);
+        if (settings.showSeconds !== undefined) {
+            showSeconds = settings.showSeconds;
+            scheduleClock();
+        }
+    };
+
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        chrome.storage.local.get(['clockColor', 'dateColor', 'showSeconds'], r => {
+            if (r.clockColor !== undefined || r.dateColor !== undefined || r.showSeconds !== undefined) {
+                applySettings(r);
+            } else {
+                const clockColor = localStorage.getItem('clockColor');
+                const dateColor = localStorage.getItem('dateColor');
+                const showSecondsVal = localStorage.getItem('showSeconds');
+                applySettings({
+                    clockColor,
+                    dateColor,
+                    showSeconds: showSecondsVal === null ? undefined : showSecondsVal === 'true'
+                });
+            }
+        });
+    } else {
+        const clockColor = localStorage.getItem('clockColor');
+        const dateColor = localStorage.getItem('dateColor');
+        const showSecondsVal = localStorage.getItem('showSeconds');
+        applySettings({
+            clockColor,
+            dateColor,
+            showSeconds: showSecondsVal === null ? undefined : showSecondsVal === 'true'
+        });
+    }
+}
+
+clockSettingsBtn.onclick = openClockSettings;
+closeClockSettings.onclick = closeClockSettingsModal;
+clockSettingsOverlay.onclick = closeClockSettingsModal;
+
+clockColorInput.oninput = e => updateColor('clock', e.target.value);
+dateColorInput.oninput = e => updateColor('date', e.target.value);
+
+clockColorText.onchange = e => updateColor('clock', e.target.value);
+dateColorText.onchange = e => updateColor('date', e.target.value);
+
+showSecondsToggle.onchange = e => {
+    showSeconds = e.target.checked;
+    scheduleClock();
+    saveColorSettings();
+};
+
+resetColorsBtn.onclick = () => {
+    updateColor('clock', '#ffffff');
+    updateColor('date', 'rgba(255, 255, 255, 0.9)');
+};
+
+function getFocusableElements(container) {
+    return Array.from(container.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter(element => !element.hidden && element.offsetParent !== null);
+}
+
+function trapFocus(event, container) {
+    const focusable = getFocusableElements(container);
+    if (!focusable.length) {
+        event.preventDefault();
+        container.focus();
+        return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+    }
+}
+
+function moveMenuFocus(event, container) {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = getFocusableElements(container);
+    if (!items.length) return;
+    event.preventDefault();
+    const currentIndex = Math.max(0, items.indexOf(document.activeElement));
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length;
+    if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = items.length - 1;
+    items[nextIndex].focus();
+}
+
+contextMenu.addEventListener('keydown', event => moveMenuFocus(event, contextMenu));
+bookmarkContextMenu.addEventListener('keydown', event => moveMenuFocus(event, bookmarkContextMenu));
+iconGrid.addEventListener('keydown', event => moveMenuFocus(event, iconGrid));
+
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+        if (iconPickerModal.classList.contains('show')) {
+            event.preventDefault();
+            closeIconPickerModal();
+            return;
+        }
+        if (clockSettingsModal.classList.contains('show')) {
+            event.preventDefault();
+            closeClockSettingsModal();
+            return;
+        }
+        if (bookmarkContextMenu.classList.contains('show')) {
+            event.preventDefault();
+            hideBookmarkContextMenu({ restoreFocus: true });
+            return;
+        }
+        if (contextMenu.classList.contains('show')) {
+            event.preventDefault();
+            hideContextMenu({ restoreFocus: true });
+            return;
+        }
+        if (searchHistoryDropdown.classList.contains('show')) {
+            event.preventDefault();
+            closeSearchHistory({ restoreFocus: true });
+            return;
+        }
+        if (engineDropdown.classList.contains('show')) {
+            event.preventDefault();
+            closeEngineDropdown({ restoreFocus: true });
+            return;
+        }
+        if (sidebar.classList.contains('open')) {
+            event.preventDefault();
+            closeSidebar();
+        }
+    }
+
+    if (event.key === 'Tab') {
+        if (iconPickerModal.classList.contains('show')) trapFocus(event, iconPickerModal);
+        else if (clockSettingsModal.classList.contains('show')) trapFocus(event, clockSettingsModal);
+        else if (sidebar.classList.contains('open')) trapFocus(event, sidebar);
+    }
+});
+
+// ============ INIT ============
+window.addEventListener('pagehide', () => {
+    releaseCachedIconUrls(tagsGrid);
+    releaseCachedIconUrls(bookmarkList);
+});
+
+loadTags();
+loadColorSettings();
